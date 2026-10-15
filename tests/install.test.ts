@@ -24,7 +24,18 @@ const BROKEN = "#!/nonexistent/interp\n";
 const OLD = "#!/bin/sh\necho old-install\n";
 
 // install.sh が使う道具だけを入れた PATH。本物の gh が紛れ込むと「gh が無い」を作れない
-const TOOLS = ["uname", "mktemp", "rm", "mkdir", "mv", "chmod", "grep", "awk", "sha256sum"];
+const TOOLS = [
+  "uname",
+  "mktemp",
+  "rm",
+  "mkdir",
+  "mv",
+  "chmod",
+  "grep",
+  "awk",
+  "sha256sum",
+  "sleep",
+];
 
 type Release = { binary?: string; sums?: string };
 
@@ -165,6 +176,27 @@ describe("install.sh", () => {
     expect(r.err).toContain("checksum mismatch");
     expect(readFileSync(installed(), "utf8")).toBe(OLD);
   });
+
+  test("dash で途中に TERM を受けても、install 先に作業 dir を残さない", async () => {
+    const dash = Bun.which("dash");
+    if (!dash) throw new Error("dash is needed for this test");
+    startServer({ "v1.0.0": release("#!/bin/sh\nsleep 2\n") });
+    shimCurl();
+    const proc = Bun.spawn([dash, INSTALL_SH], {
+      cwd: sb.dir,
+      env: { PATH: bin, HOME: sb.home, NINE_ROUTER_CLI_INSTALL_DIR: installDir },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    for (let i = 0; i < 100 && leftovers().length === 0; i++) await Bun.sleep(20);
+    expect(leftovers().length).toBe(1);
+
+    proc.kill("SIGTERM");
+
+    expect(await proc.exited).toBe(143);
+    expect(leftovers()).toEqual([]);
+  }, 15_000);
 
   test("動かないバイナリは、入っている版を置き換えずに止まる", async () => {
     startServer({ "v1.0.0": release(BROKEN) });

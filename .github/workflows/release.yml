@@ -106,7 +106,10 @@ jobs:
             exit 0
           fi
           # 同じ commit の再実行は、別の tag を切らず前回の tag を使う。
-          existing="$(git tag --points-at HEAD --list 'v*' | sed -n 1p)"
+          # 自動の再実行が使い直すのは自分が切った rc の tag だけ。同じ commit に手の正式版があっても選ばない
+          rc_tags="$(git tag --points-at HEAD --list 'v*-rc.*')"
+          # 一致が 0 件の grep は 1 で抜けるので、それだけを空として受ける (git の失敗は上の代入で止まる)
+          existing="$(printf '%s\n' "$rc_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' | sort -V | tail -n 1)" || existing=""
           # コマンド置換は代入に分ける。echo の引数の中に置くと、失敗しても set -e が止まらず
           # 空の tag で緑のまま終わる。
           if [ -n "$existing" ]; then
@@ -170,4 +173,9 @@ jobs:
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sh scripts/publish-release.sh
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          MAIN_SHA="$(git rev-parse --verify refs/remotes/origin/main)"
+          export MAIN_SHA
+          sh scripts/publish-release.sh

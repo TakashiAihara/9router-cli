@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { makeSandbox, removeSandbox, type Sandbox } from "./helpers/cli.ts";
 
@@ -43,6 +43,9 @@ esac
 });
 afterEach(() => removeSandbox(sb));
 
+const head = () =>
+  Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: sb.dir }).stdout.toString().trim();
+
 function publish(env: Record<string, string> = {}) {
   const published = join(sb.dir, "published");
   return Bun.spawnSync(["/bin/sh", SCRIPT], {
@@ -51,6 +54,7 @@ function publish(env: Record<string, string> = {}) {
       PATH: `${join(sb.dir, "bin")}:${process.env.PATH}`,
       HOME: sb.home,
       TAG: "v0.1.1-rc.2",
+      MAIN_SHA: head(),
       PUBLISHED_SUMS: published,
       ...env,
     },
@@ -68,7 +72,23 @@ describe("publish-release.sh", () => {
     const r = publish();
 
     expect(r.exitCode).toBe(0);
-    expect(ghCalls()).toContain("release create v0.1.1-rc.2 --target ");
+    expect(head()).toMatch(/^[0-9a-f]{40}$/);
+    expect(ghCalls()).toContain(`release create v0.1.1-rc.2 --target ${head()} --latest=true `);
+  });
+
+  test("main の先頭でない commit の release は Latest にしない", () => {
+    const r = publish({ MAIN_SHA: "0123456789abcdef0123456789abcdef01234567" });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`--target ${head()} --latest=false `);
+  });
+
+  test("MAIN_SHA が無ければ release を作らずに止まる", () => {
+    const r = publish({ MAIN_SHA: "" });
+
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("MAIN_SHA");
+    expect(existsSync(calls)).toBe(false);
   });
 
   test("公開済みで SHA256SUMS が同じなら、何もせず成功する", () => {

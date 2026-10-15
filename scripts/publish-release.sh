@@ -7,8 +7,13 @@
 set -eu
 
 : "${TAG:?TAG is required}"
+: "${MAIN_SHA:?MAIN_SHA is required}"
 
-if gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "$TAG" --generate-notes \
+head="$(git rev-parse --verify HEAD)"
+# install.sh は Latest を配るので、main の先頭でない commit の release を Latest にしない
+if [ "$head" = "$MAIN_SHA" ]; then latest=true; else latest=false; fi
+
+if gh release create "$TAG" --target "$head" --latest="$latest" --title "$TAG" --generate-notes \
   dist/9router-cli-* dist/SHA256SUMS; then
   exit 0
 fi

@@ -52,6 +52,10 @@ base="https://github.com/${REPO}/releases/download/${VERSION}"
 mkdir -p "$INSTALL_DIR"
 tmp="$(mktemp -d "${INSTALL_DIR}/.9router-cli.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
+# dash は signal では EXIT trap を走らせないので、exit を通して PATH の dir に残骸を残さない
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 echo "9router-cli: fetching ${asset} (${VERSION})"
 curl -fsSL "${base}/${asset}" -o "${tmp}/9router-cli" || die "download failed: ${base}/${asset}"
