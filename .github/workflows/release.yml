@@ -29,8 +29,18 @@ defaults:
 # ないため)。pending は 1 本しか持てず新しい方が古い方を取り消すが、main では古い commit は
 # どのみち release しない。手で push した tag の release は run ごとに別の group に入れ、
 # 後続の main の run に取り消されないようにする。
+#
+# main の group に入れるのは「その repo の main への push に対する CI の run」だけ。それ以外の
+# workflow_run (この repo の PR も、fork の main という名前の branch への push も) も起きるが、
+# どれも jobs を全部 skip するだけ。Cancel ができるかどうかは job ではなく run で決まるので、
+# それらの run まで同じ group に入ると、skip されるはずの run が待ち行列の main の run を
+# 取り消す。
 concurrency:
-  group: release-${{ github.event_name == 'workflow_run' && 'main' || github.run_id }}
+  group: >-
+    release-${{ github.event_name == 'workflow_run' &&
+    (github.event.workflow_run.event == 'push' &&
+    github.event.workflow_run.head_repository.full_name == github.repository && 'main' ||
+    github.run_id) || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -71,7 +81,7 @@ jobs:
       # setup-bun は .mise.toml を読めない (.tool-versions と package.json と .bun-version
       # だけ) ので、CI と同じ mise で bun の版を .mise.toml 1 か所に保つ。cache を切るのは、
       # 署名権限を持つ job に書き込み可能な cache を持ち込まないため。
-      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
           cache: false
 
@@ -102,7 +112,9 @@ jobs:
           main_sha="$(git rev-parse --verify refs/remotes/origin/main)"
           head_sha="$(git rev-parse HEAD)"
           if [ "$main_sha" != "$head_sha" ]; then
-            echo "main has moved past this commit; not releasing it"
+            # build が skip される理由が run summary に残らないと、「緑なのに release が無い」
+            # ようにしか見えないので annotation にする。
+            echo "::notice::main has moved to ${main_sha}; this run for ${head_sha} releases nothing"
             exit 0
           fi
           # 同じ commit の再実行は、別の tag を切らず前回の tag を使う。
@@ -139,7 +151,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || (github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag)) || github.ref }}
           persist-credentials: false
-      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
           cache: false
       - run: bun install --frozen-lockfile
@@ -156,13 +168,10 @@ jobs:
           cd dist && sha256sum 9router-cli-* > SHA256SUMS && cat SHA256SUMS
 
       # この runner で動くのは linux-x64 だけ。--version は埋め込みが効いたかの検査で、
-      # tag と違う版を名乗るバイナリは配らない。
-      - name: check the built binary runs and names the tag
-        run: |
-          set -eu
-          ./dist/9router-cli-linux-x64 --help >/dev/null
-          got="$(./dist/9router-cli-linux-x64 --version)"
-          [ "$got" = "${TAG#v}" ] || { echo "::error::binary says $got, tag is $TAG"; exit 1; }
+      # tag と違う版を名乗るバイナリは配らない。残り 3 つはここからは動かせないので、
+      # check-binaries.sh が file(1) で形と埋め込みを見てから、この 1 個を走らせる。
+      - name: check the built binaries
+        run: sh scripts/check-binaries.sh
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -175,7 +184,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          # main の先頭と比べるためと、publish-release.sh が「その tag が既に誰のものか」を
+          # 確かめるため。checkout は shallow なので tag は勝手には取られない。
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main' \
+            '+refs/tags/*:refs/tags/*'
           MAIN_SHA="$(git rev-parse --verify refs/remotes/origin/main)"
           export MAIN_SHA
           sh scripts/publish-release.sh

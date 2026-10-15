@@ -17,8 +17,8 @@ jobs:
         with:
           persist-credentials: false
       # install.sh は sh に流し込まれるファイルなので、間違えたときの代償が最も大きい
-      - name: shellcheck (install.sh, publish-release.sh)
-        run: shellcheck install.sh scripts/publish-release.sh
+      - name: shellcheck (install.sh, publish-release.sh, check-binaries.sh)
+        run: shellcheck install.sh scripts/publish-release.sh scripts/check-binaries.sh
       - uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # v1.7.12
         with:
           args: -color
@@ -31,6 +31,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
       - run: bun install --frozen-lockfile
       - run: bun run check
