@@ -92,7 +92,7 @@ const prefixOf = (m: string) => (m.includes("/") ? m.split("/")[0]! : null);
 export const runProbe = guard(async (o: ProbeOptions) => {
   if (!o.models.length && !o.combo.length && !o.allCombos)
     die("probe には model か --combo か --all-combos が要る", 2);
-  const key = secret(API_KEY);
+  const key = await secret(API_KEY);
   let targets = [...o.models];
   if (o.combo.length || o.allCombos) {
     const cookie = await login();

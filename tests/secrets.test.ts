@@ -2,11 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import * as lib from "../src/lib.ts";
 import {
+  finishCli,
+  pidAlive,
   runCli,
+  startCli,
   tsv,
   useFake,
+  waitPidFile,
+  waitPidGone,
   writeConfig,
+  writeHangCommand,
   writeLeakCheckScript,
+  writePipeHolderCommand,
   writeSecretScript,
 } from "./helpers/cli.ts";
 import { adminCalls, API_KEY, DASHBOARD_PASSWORD, startFake } from "./helpers/fake-router.ts";
@@ -161,6 +168,93 @@ describe("秘密が env に無いとき", () => {
     expect(r.err).toContain("NINE_ROUTER_DASHBOARD_PASSWORD");
     expect(r.err).toContain("0.5 秒");
     expect(adminCalls(ctx.fake.log)).toEqual([]);
+  });
+
+  // sh だけ止める実装だと孫 (infisical 等) が孤児として残るので、プロセスグループごと止まることを見る (#6)
+  test("command が時間内に返らなければ、孫のプロセスごと止めて孤児を残さない", async () => {
+    const { command, pidFile } = writeHangCommand(ctx.sb);
+    writeConfig(
+      ctx.sb,
+      `url = "${ctx.fake.url}"
+dashboard_password_command = "${command}"
+`,
+    );
+
+    const r = await bare(["combos", "list"], { NINE_ROUTER_COMMAND_TIMEOUT: "0.5" });
+
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("0.5 秒");
+    expect(adminCalls(ctx.fake.log)).toEqual([]);
+    // 孫は実際に起動している。動いていなければ、この検査には意味がない
+    const pid = await waitPidFile(pidFile, 5_000);
+    if (pid === null) throw new Error(`${pidFile} が出ないので孫の検査ができない`);
+    try {
+      expect(await waitPidGone(pid, 5_000)).toBe(true);
+    } finally {
+      // 実装が戻って生存したときは、試験自身の leftovers を残さない
+      if (pidAlive(pid)) process.kill(pid, "SIGKILL");
+    }
+  });
+
+  // 直下の sh が先に終わっても、孫が pipe を持ったままだと出力が揃ったまま EOF が来ない (#6)
+  // 実装が「子の終了 → EOF」を待つだけだと、値が正しくても時間切れと見て exit 2 し、孫も孤児として残る
+  test("command が値を返して孫が stdout を持ったまま残っても、値を捨てずに孫ごと止める", async () => {
+    const { command, pidFile } = writePipeHolderCommand(ctx.sb, DASHBOARD_PASSWORD);
+    writeConfig(
+      ctx.sb,
+      `url = "${ctx.fake.url}"
+dashboard_password_command = "${command}"
+`,
+    );
+
+    const began = Date.now();
+    const r = await bare(["combos", "list"], { NINE_ROUTER_COMMAND_TIMEOUT: "10" });
+    const took = Date.now() - began;
+
+    // 時間切れ扱いにならず、取った値で login まで通る
+    expect(r.err).not.toContain("10 秒");
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(COMBOS_LIST);
+    // 猶予は数百 ms 程度。時間切れの 10 秒まで待たない
+    expect(took).toBeLessThan(5_000);
+    // 孫は実際に起動している。動いていなければ、この検査には意味がない
+    const pid = await waitPidFile(pidFile, 5_000);
+    if (pid === null) throw new Error(`${pidFile} が出ないので孫の検査ができない`);
+    try {
+      expect(await waitPidGone(pid, 5_000)).toBe(true);
+    } finally {
+      // 実装が戻って生存したときは、試験自身の leftovers を残さない
+      if (pidAlive(pid)) process.kill(pid, "SIGKILL");
+    }
+  });
+
+  // detached で動く command には端末の signal が届かないので、CLI 自身が受け取ってグループを止める。
+  // そうしないと Ctrl-C で CLI だけ死んで孫が孤児として残る (#6)
+  test("Ctrl-C で止められたとき、孫のプロセスごと残さない", async () => {
+    const { command, pidFile } = writeHangCommand(ctx.sb);
+    writeConfig(
+      ctx.sb,
+      `url = "${ctx.fake.url}"
+dashboard_password_command = "${command}"
+`,
+    );
+
+    // 時間切れで終わらないように、走らせたまま待つ
+    const proc = startCli(ctx.sb, ["combos", "list"], { NINE_ROUTER_COMMAND_TIMEOUT: "60" });
+    const pid = await waitPidFile(pidFile, 10_000);
+    try {
+      if (pid === null) throw new Error(`${pidFile} が出ないので孫の検査ができない`);
+      proc.kill("SIGINT");
+
+      // signal をそのまま受け取ったときと同じ code で終わる
+      const r = await finishCli(proc);
+      expect(r.code).toBe(130);
+      expect(await waitPidGone(pid, 5_000)).toBe(true);
+    } finally {
+      // 実装が戻って生存したときは、試験自身の leftovers を残さない
+      if (pid !== null && pidAlive(pid)) process.kill(pid, "SIGKILL");
+      if (proc.exitCode === null) proc.kill();
+    }
   });
 
   test("先に取った秘密を、次の command の子の env に渡さない", async () => {

@@ -14,7 +14,7 @@ import {
 export type ModelsOptions = { prefix: string | undefined; json: boolean };
 
 export const runModels = guard(async (o: ModelsOptions) => {
-  const key = secret(API_KEY);
+  const key = await secret(API_KEY);
   const res = await send(
     `${baseUrl()}/v1/models`,
     { headers: { Authorization: `Bearer ${key}` } },
