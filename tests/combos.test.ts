@@ -125,6 +125,43 @@ describe("combos set", () => {
   });
 });
 
+describe("combos delete", () => {
+  test("名前を ID に解決して削除し、再取得した一覧から消える", async () => {
+    const deleted = await ctx.run(["combos", "delete", "shared", "--json"]);
+    expect(deleted.code).toBe(0);
+    expect(JSON.parse(deleted.out)).toEqual({
+      action: "deleted",
+      name: "shared",
+      models: ["oc/good", "ocg/good"],
+    });
+    expect(adminCalls(ctx.fake.log)).toEqual([
+      "POST /api/auth/login",
+      "GET /api/combos",
+      "DELETE /api/combos/id-sh",
+    ]);
+    const list = await ctx.run(["combos", "list", "--json"]);
+    expect(JSON.parse(list.out).map((c: { name: string }) => c.name)).not.toContain("shared");
+  });
+
+  test("名前が無ければ削除しない", async () => {
+    const r = await ctx.run(["combos", "delete", "missing"]);
+    expect(r.code).toBe(2);
+    expect(r.out).toBe("");
+    expect(adminCalls(ctx.fake.log)).toEqual(["POST /api/auth/login", "GET /api/combos"]);
+  });
+});
+
+describe("combos delete が管理 API に拒まれたとき", () => {
+  const broken = useFake({ adminErrorStatus: 500 });
+
+  test("exit 1 で、サーバの文言を stderr に出す", async () => {
+    const r = await broken.run(["combos", "delete", "shared"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("admin exploded");
+    expect(r.out).toBe("");
+  });
+});
+
 describe("combos set が出す after", () => {
   const stored = useFake({ storedModels: ["stored-a", "stored-b"] });
 
@@ -144,6 +181,16 @@ describe("combos set が出す after", () => {
       name: "shared",
       before: ["oc/good", "ocg/good"],
       after: ["stored-a", "stored-b"],
+    });
+  });
+
+  test("作成時もサーバが保存した段を出す", async () => {
+    const r = await stored.run(["combos", "set", "new-combo", "asked-x", "--create", "--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({
+      action: "created",
+      name: "new-combo",
+      models: ["stored-a", "stored-b"],
     });
   });
 });

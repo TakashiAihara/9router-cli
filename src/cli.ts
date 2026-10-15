@@ -1,9 +1,15 @@
 #!/usr/bin/env bun
 import { Command, InvalidArgumentError, Option } from "commander";
-import { runCombosList, runCombosSet } from "./commands/combos.ts";
+import { runCombosDelete, runCombosList, runCombosSet } from "./commands/combos.ts";
 import { runModels } from "./commands/models.ts";
 import { runProbe } from "./commands/probe.ts";
-import { runProvidersAdd, runProvidersList } from "./commands/providers.ts";
+import {
+  runProvidersAdd,
+  runProvidersDelete,
+  runProvidersList,
+  runProvidersSet,
+  runProvidersTest,
+} from "./commands/providers.ts";
 import { runUsage, USAGE_PERIODS, type UsagePeriod } from "./commands/usage.ts";
 import { runVersion } from "./commands/version.ts";
 import { VERSION } from "./version.ts";
@@ -19,7 +25,7 @@ program
   .description("9router の combo / provider の管理と、経路ごとの疎通確認")
   .version(VERSION);
 
-const combos = program.command("combos").description("combo の一覧と段の入れ替え");
+const combos = program.command("combos").description("combo の一覧・段の入れ替え・削除");
 
 combos
   .command("list")
@@ -47,7 +53,18 @@ combos
     );
   });
 
-const providers = program.command("providers").description("provider 接続の一覧と追加");
+combos
+  .command("delete")
+  .description("名前で combo を削除する")
+  .argument("<name>", "combo 名")
+  .option(JSON_FLAG, JSON_HELP)
+  .action(async (name: string, opts: { json?: boolean }) => {
+    process.exit(await runCombosDelete({ name, json: opts.json === true }));
+  });
+
+const providers = program
+  .command("providers")
+  .description("provider 接続の一覧・追加・編集・削除・試験");
 
 providers
   .command("list")
@@ -73,6 +90,72 @@ providers
         json: opts.json === true,
       }),
     );
+  });
+
+// Number("") は 0 なので、空文字を弾かないと --priority "" が優先度 0 として通ってしまう
+const priority = (value: string): number => {
+  const text = value.trim();
+  const n = Number(text);
+  if (!text || !Number.isSafeInteger(n) || n < 0)
+    throw new InvalidArgumentError("0 以上の整数を指定する");
+  return n;
+};
+
+providers
+  .command("set")
+  .description("ID で接続の名前・優先度・有効状態・API key を更新する")
+  .argument("<id>", "providers list に表示される ID")
+  .option("--name <name>", "表示名")
+  .option("--priority <n>", "優先度", priority)
+  .option("--active", "接続を有効にする")
+  .option("--inactive", "接続を無効にする")
+  .option("--key-env <VAR>", "新しい API key が入っている環境変数")
+  .option(JSON_FLAG, JSON_HELP)
+  .action(
+    async (
+      id: string,
+      opts: {
+        name?: string;
+        priority?: number;
+        active?: boolean;
+        inactive?: boolean;
+        keyEnv?: string;
+        json?: boolean;
+      },
+    ) => {
+      if (opts.active && opts.inactive) {
+        process.stderr.write("--active と --inactive は同時に指定できない\n");
+        process.exit(2);
+      }
+      process.exit(
+        await runProvidersSet({
+          id,
+          name: opts.name,
+          priority: opts.priority,
+          active: opts.active ? true : opts.inactive ? false : undefined,
+          keyEnv: opts.keyEnv,
+          json: opts.json === true,
+        }),
+      );
+    },
+  );
+
+providers
+  .command("delete")
+  .description("ID で provider 接続を削除する")
+  .argument("<id>", "接続 ID")
+  .option(JSON_FLAG, JSON_HELP)
+  .action(async (id: string, opts: { json?: boolean }) => {
+    process.exit(await runProvidersDelete({ id, json: opts.json === true }));
+  });
+
+providers
+  .command("test")
+  .description("ID で provider 接続をテストする")
+  .argument("<id>", "接続 ID")
+  .option(JSON_FLAG, JSON_HELP)
+  .action(async (id: string, opts: { json?: boolean }) => {
+    process.exit(await runProvidersTest({ id, json: opts.json === true }));
   });
 
 program

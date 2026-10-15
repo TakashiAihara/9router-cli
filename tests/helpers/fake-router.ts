@@ -212,7 +212,7 @@ export function startFake(options: FakeOptions = {}): Fake {
             id: "id-new",
             name: String(b.name),
             kind: null,
-            models: b.models as string[],
+            models: options.storedModels ?? (b.models as string[]),
           };
           combos.push(c);
           return Response.json(c, { status: 201 });
@@ -223,6 +223,13 @@ export function startFake(options: FakeOptions = {}): Fake {
           if (!c) return Response.json({ error: "Combo not found" }, { status: 404 });
           Object.assign(c, b, options.storedModels ? { models: options.storedModels } : {});
           return Response.json(c);
+        }
+        if (p.startsWith("/api/combos/") && m === "DELETE") {
+          const id = decodeURIComponent(p.slice("/api/combos/".length));
+          const index = combos.findIndex((x) => x.id === id);
+          if (index < 0) return Response.json({ error: "Combo not found" }, { status: 404 });
+          combos.splice(index, 1);
+          return Response.json({ success: true });
         }
         if (p === "/api/providers" && m === "GET") return Response.json({ connections: conns });
         if (p === "/api/providers" && m === "POST") {
@@ -238,6 +245,39 @@ export function startFake(options: FakeOptions = {}): Fake {
             },
             { status: 201 },
           );
+        }
+        if (p.startsWith("/api/providers/") && m === "GET") {
+          const id = decodeURIComponent(p.slice("/api/providers/".length));
+          const c = conns.find((x) => x.id === id);
+          return c
+            ? Response.json({ connection: c })
+            : Response.json({ error: "Connection not found" }, { status: 404 });
+        }
+        if (p.startsWith("/api/providers/") && m === "PUT") {
+          const id = decodeURIComponent(p.slice("/api/providers/".length));
+          const c = conns.find((x) => x.id === id);
+          if (!c) return Response.json({ error: "Connection not found" }, { status: 404 });
+          Object.assign(c, b);
+          return Response.json({ connection: c });
+        }
+        if (p.startsWith("/api/providers/") && m === "DELETE") {
+          const id = decodeURIComponent(p.slice("/api/providers/".length));
+          const index = conns.findIndex((x) => x.id === id);
+          if (index < 0) return Response.json({ error: "Connection not found" }, { status: 404 });
+          conns.splice(index, 1);
+          return Response.json({ message: "Connection deleted successfully" });
+        }
+        if (p.startsWith("/api/providers/") && p.endsWith("/test") && m === "POST") {
+          const id = decodeURIComponent(p.slice("/api/providers/".length, -"/test".length));
+          const c = conns.find((x) => x.id === id);
+          if (!c) return Response.json({ error: "Connection not found" }, { status: 404 });
+          // 接続に testReply があれば connection 個別の応答を返す (改行混じりの error の検査用)
+          const reply =
+            (c.testReply as object | undefined) ??
+            (id === "c1"
+              ? { valid: false, error: "expired", refreshed: false }
+              : { valid: true, error: null, refreshed: true });
+          return Response.json(reply);
         }
         if (p === "/api/usage/stats" && m === "GET") return Response.json(STATS);
         return Response.json({ error: "no route" }, { status: 404 });
