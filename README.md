@@ -10,9 +10,15 @@ CLI for the 9router admin API (combos, providers, models, probe)
 curl -fsSL https://raw.githubusercontent.com/TakashiAihara/9router-cli/main/install.sh | sh
 ```
 
-- `NINE_ROUTER_CLI_VERSION=v0.1.0` で tag を固定する (既定は latest)
+- tag を固定するなら env は `sh` の側に付ける。`curl` の側に付けると install.sh に届かず latest が入る
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TakashiAihara/9router-cli/main/install.sh | NINE_ROUTER_CLI_VERSION=v0.1.0 sh
+```
+
+- `NINE_ROUTER_CLI_VERSION` の既定は latest。latest は最初に 1 回だけ tag に解決し、バイナリも `SHA256SUMS` もその tag から取る
 - `NINE_ROUTER_CLI_INSTALL_DIR` で置き場所を変える (既定は `$HOME/.local/bin`)
-- `NINE_ROUTER_CLI_VERIFY_ATTESTATION=1` で、`gh` があれば provenance も検証する
+- `NINE_ROUTER_CLI_VERIFY_ATTESTATION=1` で provenance も `gh` で検証する。`gh` が無い・検証が通らないときは入れずに止まる
 - 手で取るなら [Releases](https://github.com/TakashiAihara/9router-cli/releases) の `9router-cli-<os>-<arch>` と `SHA256SUMS` を使う。os は `linux` / `darwin`、arch は `x64` / `arm64`
 - 対応する release が無い間は、clone して `bun install && bun run start -- --help`
 
@@ -65,3 +71,11 @@ dashboard_password_command = "infisical run --silent -- printenv NINE_ROUTER_DAS
 bun install
 bun run check
 ```
+
+### release
+
+- main に入って CI が通った commit は、すべて `vX.Y.Z-rc.N` として自動で release になる。tag が 1 つも無いときは `package.json` の version から `v<version>-rc.1` を始める
+- 確定版は `vX.Y.Z` の tag を手で push する。release の前に `bun run check` が回り、通らなければ release しない
+- Actions の `workflow_dispatch` は、既に push 済みの tag を release し直すためのもの。新しい tag は切れない
+- 公開済みの release は上書きしない。同じ tag の再実行で `SHA256SUMS` が同じなら何もせず成功、違えば落ちる
+- バイナリの `--version` は release の tag と同じ (`v` を除く)

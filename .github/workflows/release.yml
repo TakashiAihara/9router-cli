@@ -10,26 +10,31 @@ on:
   # 手で push した tag はその tag のまま release にする。確定版はこれで切る。
   push:
     tags: ["v*"]
+  # 既に push 済みの tag を release し直す (途中で落ちた run の再実行など)。新しい tag は
+  # ここでは切れない。無い tag は checkout で落ちる。確定版は tag を push して切る。
   workflow_dispatch:
     inputs:
       tag:
-        description: "release する tag (例: v0.1.0)"
+        description: "release し直す既存の tag (例: v0.1.0)"
         required: true
 
-permissions:
-  contents: write
-  # checksum は同じ release の中にあるので真正性の証明にならない。どの workflow が
-  # どの commit から作ったかを検証できるよう provenance を付ける。
-  id-token: write
-  attestations: write
+# 権限は job ごとに必要な分だけ付ける
+permissions: {}
 
-# 2 本が同じ最大 tag を読んで同じ次の tag を取り合わないよう、1 本ずつ流す。
+defaults:
+  run:
+    shell: bash
+
+# main の自動 release どうしだけを 1 本ずつ流す (同じ最大 tag を読んで同じ次の tag を取り合わ
+# ないため)。pending は 1 本しか持てず新しい方が古い方を取り消すが、main では古い commit は
+# どのみち release しない。手で push した tag の release は run ごとに別の group に入れ、
+# 後続の main の run に取り消されないようにする。
 concurrency:
-  group: release
+  group: release-${{ github.event_name == 'workflow_run' && 'main' || github.run_id }}
   cancel-in-progress: false
 
 jobs:
-  # action は tag ではなく commit で固定する (版は行末コメント)。この job は
+  # action は tag ではなく commit で固定する (版は行末コメント)。build job は
   # contents:write を持ち provenance に署名するので、動かされた tag の下で差し替えられた
   # action は「自分たちが作った」ものとして attest されてしまう。
   tag:
@@ -40,13 +45,26 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository)
+    # repo のコード (mise / bun / script / check) を動かす job なので書き込み権限を持たせない
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.decide.outputs.tag }}
     steps:
+      # 入力を checkout の ref に使う前に見る。branch 名を渡されて、その branch の中身が
+      # tag の名前で release されるのを防ぐ。形は scripts/next-tag.ts が数えられる tag と同じ。
+      - name: check the requested tag
+        if: github.event_name != 'workflow_run'
+        env:
+          GIVEN: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          shape='^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+          [[ "$GIVEN" =~ $shape ]] || { echo "::error::tag must be vX.Y.Z or vX.Y.Z-rc.N: $GIVEN"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.workflow_run.head_sha || (github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag)) || github.ref }}
           # 次の tag を数えるための全 tag と、main が進んだかを見るための origin/main
           fetch-depth: 0
           persist-credentials: false
@@ -57,38 +75,66 @@ jobs:
         with:
           cache: false
 
+      # main の run は CI が通った commit なのでそのまま使う。tag と dispatch は CI を通って
+      # いない commit を指せるので、build の前にここで通す。
+      - name: check
+        if: github.event_name != 'workflow_run'
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run check
+
       - name: decide the tag
         id: decide
         env:
           EVENT: ${{ github.event_name }}
           GIVEN: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          set -eu
+          set -euo pipefail
           if [ "$EVENT" != workflow_run ]; then
             echo "tag=$GIVEN" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # main にはもっと新しい commit があり、その run が release する。古い方を後から
-          # release すると古いコードが latest になる。
-          if [ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ]; then
+          # release すると古いコードが latest になる。origin/main が引けないときは、
+          # 「進んでいない」と読まず job ごと落とす (空文字との比較で黙って skip しない)。
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          main_sha="$(git rev-parse --verify refs/remotes/origin/main)"
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$main_sha" != "$head_sha" ]; then
             echo "main has moved past this commit; not releasing it"
             exit 0
           fi
           # 同じ commit の再実行は、別の tag を切らず前回の tag を使う。
-          existing="$(git tag --points-at HEAD --list 'v*' | head -n 1)"
-          echo "tag=${existing:-$(bun scripts/next-tag.ts)}" >> "$GITHUB_OUTPUT"
+          existing="$(git tag --points-at HEAD --list 'v*' | sed -n 1p)"
+          # コマンド置換は代入に分ける。echo の引数の中に置くと、失敗しても set -e が止まらず
+          # 空の tag で緑のまま終わる。
+          if [ -n "$existing" ]; then
+            tag="$existing"
+          else
+            tag="$(bun scripts/next-tag.ts)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   build:
     needs: tag
     if: needs.tag.outputs.tag != ''
+    permissions:
+      contents: write
+      # checksum は同じ release の中にあるので真正性の証明にならない。どの workflow が
+      # どの commit から作ったかを検証できるよう provenance を付ける。
+      id-token: write
+      attestations: write
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
     steps:
       # 手動実行では inputs.tag と default branch の HEAD が食い違う。ref を明示しないと
       # tag と中身が違うバイナリが release に載り、後から見分けられない。tag が無ければ
-      # ここで落ちるので、存在しない tag の release は作られない。
+      # ここで落ちる。
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.workflow_run.head_sha || (github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag)) || github.ref }}
           persist-credentials: false
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
         with:
@@ -96,15 +142,24 @@ jobs:
       - run: bun install --frozen-lockfile
 
       # bun はクロスコンパイルできるので 4 つとも 1 台で作る。OS ごとに runner を分けると、
-      # 同じ入力から作ったという保証が弱くなる。build の中身は package.json の build script が正。
+      # 同じ入力から作ったという保証が弱くなる。build の中身は scripts/build.ts が正。
+      # RELEASE_TAG は --version に埋め込まれる。
       - name: build
+        env:
+          RELEASE_TAG: ${{ env.TAG }}
         run: |
           set -eux
           bun run build
           cd dist && sha256sum 9router-cli-* > SHA256SUMS && cat SHA256SUMS
 
-      - name: check the built binary runs (only the one this runner can execute)
-        run: ./dist/9router-cli-linux-x64 --help
+      # この runner で動くのは linux-x64 だけ。--version は埋め込みが効いたかの検査で、
+      # tag と違う版を名乗るバイナリは配らない。
+      - name: check the built binary runs and names the tag
+        run: |
+          set -eu
+          ./dist/9router-cli-linux-x64 --help >/dev/null
+          got="$(./dist/9router-cli-linux-x64 --version)"
+          [ "$got" = "${TAG#v}" ] || { echo "::error::binary says $got, tag is $TAG"; exit 1; }
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -115,8 +170,4 @@ jobs:
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.tag.outputs.tag }}
-        run: |
-          set -eux
-          gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "$TAG" --generate-notes dist/9router-cli-* dist/SHA256SUMS \
-            || gh release upload "$TAG" dist/9router-cli-* dist/SHA256SUMS --clobber
+        run: sh scripts/publish-release.sh

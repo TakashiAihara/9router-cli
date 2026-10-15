@@ -8,8 +8,10 @@
  * own release candidates: the final version would read as the oldest, and the next tag
  * would reuse a number that already exists.
  *
- * Tags in neither shape are ignored rather than guessed at. No tag at all is an error — the
- * first version is a person's decision, not a default.
+ * Tags in neither shape are ignored rather than guessed at. With no tag at all, the first
+ * release candidate is counted from the version in package.json, which is where a person
+ * decides the first version: `0.1.0` gives `v0.1.0-rc.1`. Failing instead would leave every
+ * main push without a release until someone cut a tag by hand.
  */
 type Version = readonly [major: number, minor: number, patch: number, rc: number];
 
@@ -22,13 +24,19 @@ function parse(tag: string): Version | null {
   return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? Infinity : Number(m[4])];
 }
 
-// Infinity - Infinity is NaN, which is falsy, so two equal finals still compare as 0.
 const compare = (a: Version, b: Version): number =>
-  a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3] || 0;
+  a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
 
-export function nextTag(tags: readonly string[]): string {
+export function nextTag(tags: readonly string[], firstVersion: string): string {
   const versions = tags.map(parse).filter((v) => v !== null);
-  if (!versions.length) throw new Error("no vX.Y.Z or vX.Y.Z-rc.N tag to count from");
+  if (!versions.length) {
+    if (!/^\d+\.\d+\.\d+$/.test(firstVersion)) {
+      throw new Error(
+        `no tag to count from, and package.json version "${firstVersion}" is not X.Y.Z`,
+      );
+    }
+    return `v${firstVersion}-rc.1`;
+  }
   const [major, minor, patch, rc] = versions.reduce((a, b) => (compare(a, b) >= 0 ? a : b));
   return rc === Infinity
     ? `v${major}.${minor}.${patch + 1}-rc.1`
@@ -41,5 +49,6 @@ if (import.meta.main) {
     console.error(git.stderr.toString());
     process.exit(1);
   }
-  console.log(nextTag(git.stdout.toString().split("\n")));
+  const { version } = await Bun.file(new URL("../package.json", import.meta.url)).json();
+  console.log(nextTag(git.stdout.toString().split("\n"), String(version)));
 }

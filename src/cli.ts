@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 import { Command, InvalidArgumentError, Option } from "commander";
-import pkg from "../package.json" with { type: "json" };
 import { runCombosList, runCombosSet } from "./commands/combos.ts";
 import { runModels } from "./commands/models.ts";
 import { runProbe } from "./commands/probe.ts";
 import { runProvidersAdd, runProvidersList } from "./commands/providers.ts";
 import { runUsage, USAGE_PERIODS, type UsagePeriod } from "./commands/usage.ts";
 import { runVersion } from "./commands/version.ts";
+import { VERSION } from "./version.ts";
 
 const JSON_FLAG = "--json";
 const JSON_HELP = "TSV ではなく JSON を stdout に出す";
@@ -17,7 +17,7 @@ program.exitOverride((e) => process.exit(e.exitCode === 0 ? 0 : 2));
 program
   .name("9router-cli")
   .description("9router の combo / provider の管理と、経路ごとの疎通確認")
-  .version(pkg.version);
+  .version(VERSION);
 
 const combos = program.command("combos").description("combo の一覧と段の入れ替え");
 

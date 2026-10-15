@@ -6,6 +6,8 @@
 # Environment:
 #   NINE_ROUTER_CLI_VERSION      tag to install (default: latest)
 #   NINE_ROUTER_CLI_INSTALL_DIR  where to put it (default: $HOME/.local/bin)
+#   NINE_ROUTER_CLI_VERIFY_ATTESTATION
+#                                1 to verify the build provenance with gh (stops if gh is missing)
 set -eu
 
 REPO="TakashiAihara/9router-cli"
@@ -30,15 +32,25 @@ case "$(uname -m)" in
 esac
 
 asset="9router-cli-${os}-${arch}"
-if [ "$VERSION" = latest ]; then
-  base="https://github.com/${REPO}/releases/latest/download"
-else
-  base="https://github.com/${REPO}/releases/download/${VERSION}"
-fi
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 
-tmp="$(mktemp -d)"
+# A release lands on every merge. Resolving "latest" once keeps the binary and SHA256SUMS
+# from two different releases when one is published between the two downloads.
+if [ "$VERSION" = latest ]; then
+  latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")" \
+    || die "could not look up the latest release"
+  case "$latest_url" in
+    */releases/tag/*) VERSION="${latest_url##*/}" ;;
+    *) die "could not resolve the latest release (got: ${latest_url})" ;;
+  esac
+fi
+base="https://github.com/${REPO}/releases/download/${VERSION}"
+
+# The scratch dir is inside the install dir: the binary is run from here before it replaces
+# anything, so it must not depend on /tmp being mounted executable, and mv stays a rename.
+mkdir -p "$INSTALL_DIR"
+tmp="$(mktemp -d "${INSTALL_DIR}/.9router-cli.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "9router-cli: fetching ${asset} (${VERSION})"
@@ -72,24 +84,27 @@ echo "9router-cli: checksum ok"
 #
 # With --repo alone an attestation from any workflow in the repo passes, so pin the
 # workflow that signed it.
-if command -v gh >/dev/null 2>&1 && [ "${NINE_ROUTER_CLI_VERIFY_ATTESTATION:-0}" = 1 ]; then
+if [ "${NINE_ROUTER_CLI_VERIFY_ATTESTATION:-0}" = 1 ]; then
+  command -v gh >/dev/null 2>&1 \
+    || die "NINE_ROUTER_CLI_VERIFY_ATTESTATION=1 needs gh, which is not installed"
   # A && B || C is not if-then-else: a failing echo alone would reach die (SC2015)
-  if gh attestation verify "${tmp}/9router-cli" \
+  if verify_err="$(gh attestation verify "${tmp}/9router-cli" \
     --repo "$REPO" \
-    --signer-workflow "${REPO}/.github/workflows/release.yml" >/dev/null 2>&1; then
+    --signer-workflow "${REPO}/.github/workflows/release.yml" 2>&1 >/dev/null)"; then
     echo "9router-cli: attestation ok"
   else
-    die "attestation verification failed"
+    die "attestation verification failed: ${verify_err}"
   fi
 fi
 
 chmod +x "${tmp}/9router-cli"
-mkdir -p "$INSTALL_DIR"
+
+# Run it before it replaces anything. A binary this machine cannot execute (wrong libc, a CPU
+# the build does not support) must not take a working install down with it.
+"${tmp}/9router-cli" --help >/dev/null 2>&1 \
+  || die "the downloaded binary does not run on this machine; ${INSTALL_DIR}/9router-cli is unchanged"
+
 mv "${tmp}/9router-cli" "${INSTALL_DIR}/9router-cli"
-
-# Check that what we installed actually runs. Placing a file is not installing it.
-"${INSTALL_DIR}/9router-cli" --help >/dev/null 2>&1 || die "the installed binary does not run: ${INSTALL_DIR}/9router-cli"
-
 echo "9router-cli: installed to ${INSTALL_DIR}/9router-cli"
 
 case ":${PATH}:" in
