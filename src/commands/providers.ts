@@ -26,8 +26,11 @@ const locks = (c: Record<string, unknown>) =>
     ([k, v]) => k.startsWith("modelLock_") && v && Date.parse(asUtc(String(v))) > Date.now(),
   ).length;
 
-const publicName = (name: unknown) =>
-  typeof name === "string" && name.includes("@") ? null : (name ?? null);
+// oauth の接続は name に本人の email が入るので伏せる。apikey の name は利用者が `--name` で選んだ
+// 表示名なので、@ を含んでいても伏せない (#2)。apikey と分かるものだけ出す。authType が無い /
+// 新しい型 / 別の値なら email かもしれないので伏せる
+const publicName = (name: unknown, authType: unknown) =>
+  authType !== "apikey" && typeof name === "string" && name.includes("@") ? null : (name ?? null);
 
 export const runProvidersList = guard(async (o: ProvidersListOptions) => {
   const cookie = await login();
@@ -35,7 +38,7 @@ export const runProvidersList = guard(async (o: ProvidersListOptions) => {
   const rows = conns.map((c) => ({
     id: c.id ?? null,
     provider: c.provider ?? null,
-    name: publicName(c.name),
+    name: publicName(c.name, c.authType),
     authType: c.authType ?? null,
     isActive: c.isActive ?? null,
     testStatus: c.testStatus ?? null,
@@ -100,7 +103,7 @@ export const runProvidersSet = guard(async (o: ProvidersSetOptions) => {
   const row = {
     id: c.id,
     provider: c.provider,
-    name: publicName(c.name),
+    name: publicName(c.name, c.authType),
     isActive: c.isActive,
     priority: c.priority,
   };
@@ -145,7 +148,9 @@ export const runProvidersAdd = guard(async (o: ProvidersAddOptions) => {
   const row = {
     id: c.id,
     provider: c.provider,
-    name: publicName(c.name),
+    // add は apikey の接続しか作らない。応答の authType が無いからでも email が入ることはない
+    // ので、作成した型を自分で渡して、利用者が `--name` で選んだ @ を含む表示名を出す
+    name: publicName(c.name, "apikey"),
     testStatus: c.testStatus,
   };
   if (o.json) json(row);

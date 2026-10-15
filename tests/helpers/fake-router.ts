@@ -19,6 +19,23 @@ export const VERSION_INFO_CURRENT = {
   latestVersion: "0.6.2",
   hasUpdate: false,
 };
+// upstream が npm に届かないとき。latestVersion が null だと hasUpdate も false になる
+export const VERSION_INFO_UNKNOWN = {
+  currentVersion: "0.5.99",
+  latestVersion: null,
+  hasUpdate: false,
+};
+
+// 9router の手前に proxy があって届かなかったときの応答 (nginx と同じ形)
+const PROXY_PAGE = `<!DOCTYPE html>
+<html>
+<head><title>502 Bad Gateway</title></head>
+<body>
+<center><h1>502 Bad Gateway</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+`;
 
 const SESSION_COOKIE = "auth_token=tok-9f2";
 const MODEL_IDS = ["free-forever", "ocg/good", "kr/dead", "ocg/sse", "ocgx/foo", "oc/good"];
@@ -35,6 +52,10 @@ export type FakeOptions = {
   // 実在しない ID にも 200 を返す (対照が判別能力を持たない状態)
   leaky?: boolean;
   upToDate?: boolean;
+  // latestVersion を null にする (更新を確認できなかった状態)
+  versionLatestNull?: boolean;
+  // 9router の手前に proxy があって、全部の応答を HTML のエラーページにする (指定した status)
+  proxyStatus?: number;
   // 応答を返さないパス (pathname)。時間切れの検査用
   hang?: string[];
   // 認証済みの /api/* が返す status。管理 API のエラーの検査用
@@ -173,6 +194,13 @@ export function startFake(options: FakeOptions = {}): Fake {
       const auth = req.headers.get("authorization");
       log.push({ method: req.method, path: u.pathname + u.search, body, cookie, auth });
 
+      // proxy が手前で遮った場合。login にも管理 API にも (endpoint にも) 届かない
+      if (options.proxyStatus)
+        return new Response(PROXY_PAGE, {
+          status: options.proxyStatus,
+          headers: { "Content-Type": "text/html" },
+        });
+
       const p = u.pathname;
       const m = req.method;
       const b = (body ?? {}) as Record<string, unknown>;
@@ -183,6 +211,7 @@ export function startFake(options: FakeOptions = {}): Fake {
         if (options.versionStatus) {
           return Response.json({ error: "version unavailable" }, { status: options.versionStatus });
         }
+        if (options.versionLatestNull) return Response.json(VERSION_INFO_UNKNOWN);
         return Response.json(options.upToDate ? VERSION_INFO_CURRENT : VERSION_INFO);
       }
       if (p === "/api/auth/login" && m === "POST") {
@@ -233,6 +262,8 @@ export function startFake(options: FakeOptions = {}): Fake {
         }
         if (p === "/api/providers" && m === "GET") return Response.json({ connections: conns });
         if (p === "/api/providers" && m === "POST") {
+          // authType を返さない。add は apikey の接続しか作らないので、CLI 側は
+          // 応答の型を見ず作成した型で name を伏せるかどうかを判断する
           return Response.json(
             {
               connection: {

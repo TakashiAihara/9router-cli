@@ -34,6 +34,10 @@ curl -fsSL https://raw.githubusercontent.com/TakashiAihara/9router-cli/main/inst
 | `NINE_ROUTER_URL` | 9router の URL。`http://` か `https://` で始める。既定の接続先は持たない |
 | `NINE_ROUTER_DASHBOARD_PASSWORD` | dashboard のパスワード。`combos` / `providers` / `usage` と、`probe --combo` / `--all-combos` が使う |
 | `NINE_ROUTER_API_KEY` | endpoint の API key。`models` と `probe` が使う |
+| `NINE_ROUTER_ADMIN_TIMEOUT` | 管理 API・`models`・`version` の 1 リクエストあたりの時間切れ (秒)。既定は `20` |
+| `NINE_ROUTER_COMMAND_TIMEOUT` | 設定の `*_command` の時間切れ (秒)。既定は `60` |
+
+時間切れの 2 つは正の秒数だけ受け付ける。`abc` や `0` は通信する前に exit 2 で、変数名を示す
 
 ### config.toml
 
@@ -55,6 +59,11 @@ dashboard_password_command = "infisical run --silent -- printenv NINE_ROUTER_DAS
 
 - `infisical run ...` は例。値を標準出力に 1 行返すコマンドなら何でもよい (`pass show` / `op read` など)
 - command が非 0 で終わる・空を返す・複数行を返す・時間内に返らないときは、使わずに exit 2 で止まる
+- `infisical` の login や `9router` の応答が遅いときは、`NINE_ROUTER_COMMAND_TIMEOUT` で command の時間切れを延ばす
+
+```sh
+NINE_ROUTER_COMMAND_TIMEOUT=180 9router-cli models
+```
 
 ## 定期メンテナンス
 
@@ -76,16 +85,20 @@ dashboard_password_command = "infisical run --silent -- printenv NINE_ROUTER_DAS
 9router-cli combos set free-forever kr/model-name oc/model-name
 9router-cli combos set new-combo kr/model-name --create
 9router-cli combos delete new-combo
+9router-cli version
 ```
 
 `PROVIDER_ID` は `providers list` の先頭列にある接続 ID に差し替える。`providers set` / `delete` / `test` はその ID で対象を絞る。列は ID / provider / name / authType / isActive / testStatus / errorCode / lastError / expiresAt / locks。`expiresAt` が過去の oauth 接続と `testStatus` が `error` / `unavailable` の行が、認証切れの候補。
 
-- `providers set` は ID / provider / name / isActive / priority の 5 列を返す。`name` が email の接続は `-` になる (list / add / set のいずれも token・email・clientSecret を出さない)
+- `providers set` は ID / provider / name / isActive / priority の 5 列を返す (list / add / set のいずれも token・email・clientSecret は出さない)
+- `name` の伏せ方は `authType` で分ける。`apikey` の `name` は利用者が `--name` で選んだ表示名なので、`@` を含んでいても伏せない。`oauth` の接続は `name` が本人の email として入るので、`@` を含むときだけ `-` にする。`authType` が無い・`null`・`apikey` 以外の値 (9router が将来増やす型を含む) の接続は email かもしれないので、`@` を含む `name` は同様に `-` にする。`providers add` は apikey の接続しか作らないので、応答の `authType` が無くても `--name` をそのまま出す
 - `providers set --key-env` は API key 型の接続にだけ使える。0.5.91 の管理 API は `authType` が `apikey` 以外だと **200 を返して新しい鍵を黙って捨てる** ので、CLI は接続の型を GET で確かめてから書き、送らずに exit 2 で止める。止まったときは他の項目も書かないので、`--key-env` を外せば名前・優先度・有効状態だけの編集はできる
 - `providers test` は接続単体の検証 (`valid` で 0 / 1 を分ける)。`probe` はモデルと combo を実際に呼ぶ検証。期限切れや提供終了モデルを調べるときは `probe --all-combos` の結果で失敗した段を確認し、`combos set` で差し替える
 - `providers delete` と `combos delete` は確認を挟まず即削除する。取り消しはダッシュボードでの手作業。ID を間違えると復元できないので、`providers list` の ID を写してから実行する
 
 `combos set` は段を全置換する。同じ combo を複数ホストから同時に更新すると、後の更新が先の更新を上書きすることがある。`combos set` / `providers set` が出す値は依頼した値ではなく、サーバが保存したと返した値 (`combos set` は `after`、`providers set` は各列、`combos set --create` も作成応答)。
+
+`version` は認証なしで、本体の版と更新の有無を出す。上流が npm に届かず最新版を確認できなかったときは、2 列目が `unknown` になる。「更新なし」とは読めない。`--json` は応答をそのまま返すので、その場合は `latestVersion` が `null` のまま分かる
 
 ## 終了コード
 
@@ -97,6 +110,8 @@ dashboard_password_command = "infisical run --silent -- printenv NINE_ROUTER_DAS
 | 70 | 想定外の例外。応答の形が想定と違うときなど。1 と 2 のどちらにも見せないため別の値 |
 
 `providers set --key-env` を `apikey` 以外の接続に当てたときの exit 2 は、書き込みをせずに止めたためのもの。9router なら 200 を返して新しい鍵を黙って捨てるので、拒んだのは CLI 側の判定になる。
+
+9router の手前に proxy があると、届かなかったときに 502 / 503 / 504 が HTML のエラーページで返る。HTTP の応答としては届くので、`9router` が否を答えた (exit 1) と区別する。status が 502 / 503 / 504 で本文が HTML のときは、届かなかった通信の失敗 (exit 2) として扱い、HTML は stderr に出さない。同じ status でも本文が JSON なら相手の返答なので exit 1 のまま。
 
 ## 開発
 
