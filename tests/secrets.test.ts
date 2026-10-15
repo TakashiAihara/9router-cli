@@ -274,6 +274,15 @@ describe("接続先と設定ファイル", () => {
     }
   });
 
+  test("url に scheme が無ければ通信せず exit 2", async () => {
+    const r = await ctx.run(["version"], { NINE_ROUTER_URL: "router.test:8080" });
+
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("http://");
+    expect(r.err).not.toContain("通信に失敗");
+    expect(r.out).toBe("");
+  });
+
   test("設定の url が文字列でなければ exit 2 で、キー名を示す", async () => {
     writeConfig(ctx.sb, "url = 5\n");
 

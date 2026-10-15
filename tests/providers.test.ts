@@ -149,6 +149,7 @@ describe("providers list の lock の時刻", () => {
         modelLock_future: naive(60 * 60 * 1000),
         modelLock_past: naive(-60 * 60 * 1000),
         modelLock_offset: `${naive(60 * 60 * 1000 + 9 * 60 * 60 * 1000)}+09:00`,
+        modelLock_space: naive(60 * 60 * 1000).replace("T", " "),
       },
     ],
   });
@@ -157,6 +158,6 @@ describe("providers list の lock の時刻", () => {
     const r = await zoned.run(["providers", "list"], { TZ: "Asia/Tokyo" });
 
     expect(r.code).toBe(0);
-    expect(r.out).toBe(tsv("kiro\tn\tapikey\ttrue\tactive\t-\t-\t-\tlocks=2"));
+    expect(r.out).toBe(tsv("kiro\tn\tapikey\ttrue\tactive\t-\t-\t-\tlocks=3"));
   });
 });

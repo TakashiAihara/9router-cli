@@ -8,8 +8,9 @@ export type ProvidersAddOptions = {
   json: boolean;
 };
 
-// タイムゾーンの無い時刻は UTC として読む (Date.parse は host の local time で読む)
-const asUtc = (v: string) => (/T[\d:.]+$/.test(v) ? `${v}Z` : v);
+// タイムゾーンの無い時刻は UTC として読む (Date.parse は host の local time で読む)。区切りは移植元の fromisoformat に合わせ T と空白の両方
+const asUtc = (v: string) =>
+  /^\d{4}-\d\d-\d\d[T ][\d:.]+$/.test(v) ? `${v.replace(" ", "T")}Z` : v;
 
 const locks = (c: Record<string, unknown>) =>
   Object.entries(c).filter(

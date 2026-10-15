@@ -137,7 +137,7 @@ program
   });
 
 // 1 は相手が否と答えた (probe の NG・管理 API のエラー・version のエラー)、
-// 2 は使い方・秘密・通信・認証 (login と models の鍵の拒否) の誤りで、どちらも意味を持つ終了コードなので、
+// 2 は使い方・秘密・通信の誤りと、login と models の失敗 (status を問わない。移植元どおり) で、どちらも意味を持つ終了コードなので、
 // 想定外の例外がそのどちらかに見えないよう別の値で落とす
 program.parseAsync().catch((e: unknown) => {
   process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);

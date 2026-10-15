@@ -52,11 +52,11 @@ function parseSuccess(raw: string): [string | null, string] {
   if (raw.startsWith("data:")) {
     let model: string | null = null;
     let text = "";
-    // usage を載せる最後のフレームは choices が空
     for (const line of raw.split("\n")) {
       if (!line.startsWith("data: ") || line.slice(6).trim() === "[DONE]") continue;
       const ch = JSON.parse(line.slice(6));
       model = ch.model ?? model;
+      // usage を載せる最後のフレームは choices が空
       if (ch.choices?.length) text += ch.choices[0].delta.content ?? "";
     }
     return [model, text];
@@ -82,6 +82,7 @@ function parseSuccess(raw: string): [string | null, string] {
       break;
     }
   }
+  if (end < 0) throw new SyntaxError("JSON の終端が無い");
   const obj = JSON.parse(s.slice(0, end));
   return [obj.model ?? null, obj.choices[0].message.content ?? ""];
 }

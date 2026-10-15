@@ -87,6 +87,8 @@ function config(): Config {
 export function baseUrl(): string {
   const u = process.env.NINE_ROUTER_URL || config().url;
   if (!u) return die("NINE_ROUTER_URL も設定の url も無い", 2);
+  // scheme の無い値は proxy 越しだと 502 の HTML が返り、通信の失敗ではなく相手の否に見える
+  if (!/^https?:\/\//.test(u)) return die(`url は http:// か https:// で始める: ${u}`, 2);
   return u.replace(/\/+$/, "");
 }
 
