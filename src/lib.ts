@@ -117,20 +117,110 @@ const CMD_KEY: Record<string, "api_key_command" | "dashboard_password_command"> 
   [API_KEY]: "api_key_command",
 };
 
-export function secret(name: string): string {
+// detached で起動した子が持つプロセスグループをまとめて止める。
+// 宛先は直下で起動した子の pid (= その pgid) だけなので、自分のプロセスグループには及ばない。
+// Linux はグループにプロセスを残している間その pgid を pid として取らないので、別のグループを誤って指すこともない
+function killGroup(pid: number): void {
+  // 0 は自分のグループ、負の値は別の番号 (−1 なら全プロセス)。子の pid は自分の pid と同じにならない
+  if (pid <= 1 || pid === process.pid) return;
+  try {
+    // 0 で居ることを確かめてから止める。空のグループは pgid を再利用されうるので、その場合は何もしない
+    process.kill(-pid, 0);
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // 既に止まっていれば (ESRCH) 止める対象も無いので、何もしなくてよい
+  }
+}
+
+type Command = { timedOut: boolean; code: number | null; out: string; err: string };
+
+// 直下の子が終わった後から pipe の EOF を待つ猶予。
+// 孫が pipe を持ったままなら EOF は来ないので、この時間を信じてから孫ごと止める
+const EOF_GRACE_MS = 200;
+
+// 待ちを ms で打ち切って null を返す。onTimeout は打ち切りの前に止める対象へ signal を送るため
+function deadline<T>(work: Promise<T>, ms: number, onTimeout?: () => void): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cut = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      resolve(null);
+    }, ms);
+  });
+  return Promise.race([work, cut]).finally(() => clearTimeout(timer));
+}
+
+// 設定の *_command を走らせて出力を集める。
+// 同期実行 (spawnSync) では実行中の JS が動かないので、Ctrl-C を受けて孫まで止める処理が書けない。
+// detached で子を別グループにすると signal は子に届かないので、親が先に死んで孫が孤児として残る。
+// そこで非同期で走らせ、待つあいだ handler を効かせたままにする
+async function runCommand(cmd: string, ms: number): Promise<Command> {
+  const proc = Bun.spawn(["sh", "-c", cmd], {
+    env: process.env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    // 子の pid がそのまま pgid になるので、孫をまとめて止めるのに使える
+    detached: true,
+  });
+  const pgid = proc.pid;
+  // signal を受けたら先にグループを止めてから終わる。code は signal を素で受けたときと同じ (130 / 143)
+  const onSigint = () => {
+    killGroup(pgid);
+    process.exit(130);
+  };
+  const onSigterm = () => {
+    killGroup(pgid);
+    process.exit(143);
+  };
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+
+  // 出力が大きければ pipe のバッファで子が詰まるので、待つ前に読み始める。
+  // 孫を追い払ったあとも出力を捨てずに済むよう、読み終えたら変数に残す
+  let out = "";
+  let err = "";
+  const readOut = new Response(proc.stdout).text().then((t) => (out = t));
+  const readErr = new Response(proc.stderr).text().then((t) => (err = t));
+  const done = (async () => ({
+    code: await proc.exited,
+    out: await readOut,
+    err: await readErr,
+  }))();
+  // 打ち切ったあとは待たないことがあるので、握り潰して unhandled にしない
+  done.catch(() => {});
+
+  try {
+    // 時間切れは直下の子の終了だけで決める。孫が pipe を持ったまま残り続けても待たない
+    const code = await deadline(proc.exited, ms, () => killGroup(pgid));
+    if (code === null) return { timedOut: true, code: null, out: "", err: "" };
+
+    // 直下の子は終わったので、残りは孫の分。孫が pipe を持ったままだと出力は揃っていても EOF が来ない。
+    // 猶予を置いて待ち、待てなければ孫ごと止めてから出力を拾う (#6)
+    const r = await deadline(done, EOF_GRACE_MS, () => killGroup(pgid));
+    if (!r) await deadline(done, EOF_GRACE_MS);
+    return { timedOut: false, code, out, err };
+  } finally {
+    // 正常・失敗・時間切れのどれで終わっても、孫が残っていれば止めておく
+    killGroup(pgid);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  }
+}
+
+export async function secret(name: string): Promise<string> {
   const v = process.env[name];
   if (v) return v;
   const key = CMD_KEY[name];
   const cmd = key ? config()[key] : undefined;
   if (!cmd) return die(`${name} が env に無く、設定の ${key ?? "*_command"} も無い`, 2);
   const ms = commandTimeoutMs();
-  const r = Bun.spawnSync(["sh", "-c", cmd], { env: process.env, stderr: "pipe", timeout: ms });
-  if (r.exitedDueToTimeout)
-    return die(`${name} を ${key} から取れない: ${ms / 1000} 秒で返らない`, 2);
-  const out = r.stdout.toString().replace(/\r?\n$/, "");
-  const why = r.stderr.toString().trim().split("\n").pop() ?? "";
-  if (r.exitCode !== 0 || !out)
-    return die(`${name} を ${key} から取れない (exit ${r.exitCode}) ${why}`.trimEnd(), 2);
+  const r = await runCommand(cmd, ms);
+  if (r.timedOut) return die(`${name} を ${key} から取れない: ${ms / 1000} 秒で返らない`, 2);
+  const out = r.out.replace(/\r?\n$/, "");
+  const why = r.err.trim().split("\n").pop() ?? "";
+  if (r.code !== 0 || !out)
+    return die(`${name} を ${key} から取れない (exit ${r.code}) ${why}`.trimEnd(), 2);
   if (/[\r\n]/.test(out)) return die(`${name} として複数行が返った。値には使わない`, 2);
   return out;
 }
@@ -152,7 +242,7 @@ export async function login(): Promise<string> {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: secret(PASSWORD) }),
+      body: JSON.stringify({ password: await secret(PASSWORD) }),
     },
     adminTimeoutMs(),
   );

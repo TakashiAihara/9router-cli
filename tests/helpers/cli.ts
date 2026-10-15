@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, setDefaultTimeout } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -35,12 +43,7 @@ export function removeSandbox(sb: Sandbox): void {
 }
 
 // 本物の NINE_ROUTER_* や利用者の設定ファイルが紛れ込まないよう、env は親から引き継がず組み直す
-export async function runCli(
-  sb: Sandbox,
-  args: string[],
-  env: Env = {},
-  opts: { xdg?: boolean } = {},
-): Promise<Ran> {
+function cliEnv(sb: Sandbox, env: Env, opts: { xdg?: boolean }): Record<string, string> {
   const base: Env = { PATH: process.env.PATH, HOME: sb.home };
   if (opts.xdg !== false) base.XDG_CONFIG_HOME = sb.xdg;
   const merged = { ...base, ...env };
@@ -48,22 +51,41 @@ export async function runCli(
   for (const [k, v] of Object.entries(merged)) {
     if (v !== undefined) clean[k] = v;
   }
+  return clean;
+}
 
-  const proc = Bun.spawn([process.execPath, CLI, ...args], {
+// CLI を走らせたまま返す。待ち続ける前に signal を送りたいとき用
+export function startCli(sb: Sandbox, args: string[], env: Env = {}, opts: { xdg?: boolean } = {}) {
+  return Bun.spawn([process.execPath, CLI, ...args], {
     cwd: sb.dir,
-    env: clean,
+    env: cliEnv(sb, env, opts),
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
+}
+
+export async function finishCli(proc: ReturnType<typeof startCli>): Promise<Ran> {
   const killer = setTimeout(() => proc.kill(), HANG_LIMIT_MS);
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  clearTimeout(killer);
-  return { code, out, err };
+  try {
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { code, out, err };
+  } finally {
+    clearTimeout(killer);
+  }
+}
+
+export async function runCli(
+  sb: Sandbox,
+  args: string[],
+  env: Env = {},
+  opts: { xdg?: boolean } = {},
+): Promise<Ran> {
+  return finishCli(startCli(sb, args, env, opts));
 }
 
 export type Ctx = {
@@ -144,6 +166,102 @@ printf '%s\\n' "$v"
   );
   chmodSync(script, 0o755);
   return { script, log };
+}
+
+// 時間内に返らない command の偽。command は孫 (command を親に持つ子) を 1 つ起動して止まる。
+// 孫は自分の pid を pidFile に残し、SIGINT と SIGTERM を無視する。
+// よって孫の pid が消えたかどうかで「sh だけを殺した」か「プロセスグループごと止めた」かが分かれる。
+// 120 秒で自然に終わる。試験が設定する時間切れより長いので、自然に終わる前に消えたことだけを見る。
+export function writeHangCommand(sb: Sandbox): { command: string; pidFile: string } {
+  const child = join(sb.dir, "hang-child.sh");
+  const command = join(sb.dir, "hang-command.sh");
+  const pidFile = join(sb.dir, "hang-child.pid");
+  writeFileSync(
+    child,
+    `#!/bin/sh
+trap '' INT TERM
+echo "$$" > "${pidFile}"
+i=0
+while [ "$i" -lt 240 ]; do sleep 0.5; i=$((i + 1)); done
+`,
+  );
+  // sh -c がこの script を exec しても、script 自身が & と wait を持つので孫は必ず 1 つ下にいる
+  writeFileSync(command, `#!/bin/sh\nsh "${child}" &\nwait\n`);
+  chmodSync(child, 0o755);
+  chmodSync(command, 0o755);
+  return { command, pidFile };
+}
+
+// 1 行返してから stdout を持ち続ける子を background で残す command の偽 (#6)。
+// 直下の sh は値を出した直後に終わるので、出力は正しいのに孫の pipe だけが残り、EOF が来ない状態になる。
+// 孫は pid を pidFile に残し SIGINT と SIGTERM を無視するので、猶予を置いてプロセスグループごと止めたときだけ消える。
+// pidFile を待ってから値を返すので、孫が pipe を持ったまま直下の sh が終わるのは確実
+export function writePipeHolderCommand(
+  sb: Sandbox,
+  value: string,
+): { command: string; pidFile: string } {
+  const child = join(sb.dir, "pipe-holder.sh");
+  const command = join(sb.dir, "pipe-holder-command.sh");
+  const pidFile = join(sb.dir, "pipe-holder.pid");
+  writeFileSync(
+    child,
+    `#!/bin/sh
+trap '' INT TERM
+echo "$$" > "${pidFile}"
+i=0
+while [ "$i" -lt 240 ]; do sleep 0.5; i=$((i + 1)); done
+`,
+  );
+  writeFileSync(
+    command,
+    `#!/bin/sh
+sh "${child}" &
+while [ ! -s "${pidFile}" ]; do sleep 0.05; done
+printf '%s\\n' '${value}'
+`,
+  );
+  chmodSync(child, 0o755);
+  chmodSync(command, 0o755);
+  return { command, pidFile };
+}
+
+// pid が生きているか。ゾンビ (Z) は既に動いていないので死んだものと数える。
+// kill -0 はゾンビにも成功し、孤児にした子は親 (init) に kill された後もゾンビで残ることがあるので使わない
+export function pidAlive(pid: number): boolean {
+  const r = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const out = r.stdout.toString();
+  const err = r.stderr.toString().trim();
+  // ps が 1 を返して stdout も stderr も空なのは「対象がない」= 死んだ、ときだけ (procps, BSD とも同じ)。
+  // 不正な option や fork の失敗も 1 を返し stdout は空なので、ここを混ぜると生きてる pid を
+  // 「死んだ」と誤認して waitPidGone が待たずに true を返す。ps 自身の異常として落とす
+  if (r.exitCode === 1 && out === "" && err === "") return false;
+  if (r.exitCode !== 0)
+    throw new Error(`ps -p ${pid} failed: exit=${r.exitCode} signal=${r.signalCode} ${err}`);
+  const stat = out.trim();
+  // 0 は「いた」と ps が言った印。stat が空なら出力を読めない、生かさない
+  if (stat === "") throw new Error(`ps -p ${pid} exited 0 without stat`);
+  return !stat.startsWith("Z");
+}
+
+// pid が消えるまで待つ。時間切れの直後は signal の到着と親 (init) による reaping が遅れるので、
+// 1 回見ただけでは決めない
+export async function waitPidGone(pid: number, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (pidAlive(pid) && Date.now() < until) await Bun.sleep(50);
+  return !pidAlive(pid);
+}
+
+// pid ファイルが現れるまで待って、その中の pid を返す。現れなければ null (その検査は成立しない)
+export async function waitPidFile(file: string, ms: number): Promise<number | null> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (existsSync(file)) return Number(readFileSync(file, "utf8").trim());
+    await Bun.sleep(50);
+  }
+  return null;
 }
 
 // elapsed は実行ごとに変わるので固定の印に置き換える

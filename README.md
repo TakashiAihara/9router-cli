@@ -59,6 +59,7 @@ dashboard_password_command = "infisical run --silent -- printenv NINE_ROUTER_DAS
 
 - `infisical run ...` は例。値を標準出力に 1 行返すコマンドなら何でもよい (`pass show` / `op read` など)
 - command が非 0 で終わる・空を返す・複数行を返す・時間内に返らないときは、使わずに exit 2 で止まる
+- command は自分のプロセスグループで走るので、時間切れでも Ctrl-C でも、command とそれが起動した子ごと止まる (孤児を残さない)
 - `infisical` の login や `9router` の応答が遅いときは、`NINE_ROUTER_COMMAND_TIMEOUT` で command の時間切れを延ばす
 
 ```sh
