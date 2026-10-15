@@ -1,0 +1,122 @@
+name: release
+
+on:
+  # CI が通った main への push はすべて release にする。install.sh は latest を取るので、
+  # 最後に手で切った tag ではなく main の中身が配られる。
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # 手で push した tag はその tag のまま release にする。確定版はこれで切る。
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release する tag (例: v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+  # checksum は同じ release の中にあるので真正性の証明にならない。どの workflow が
+  # どの commit から作ったかを検証できるよう provenance を付ける。
+  id-token: write
+  attestations: write
+
+# 2 本が同じ最大 tag を読んで同じ次の tag を取り合わないよう、1 本ずつ流す。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # action は tag ではなく commit で固定する (版は行末コメント)。この job は
+  # contents:write を持ち provenance に署名するので、動かされた tag の下で差し替えられた
+  # action は「自分たちが作った」ものとして attest されてしまう。
+  tag:
+    # workflow_run は main という名前の branch の CI すべてで起きる。fork の PR の main
+    # も含むので、この repo の main への push だけを release にする。
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.event.inputs.tag || github.ref }}
+          # 次の tag を数えるための全 tag と、main が進んだかを見るための origin/main
+          fetch-depth: 0
+          persist-credentials: false
+      # setup-bun は .mise.toml を読めない (.tool-versions と package.json と .bun-version
+      # だけ) ので、CI と同じ mise で bun の版を .mise.toml 1 か所に保つ。cache を切るのは、
+      # 署名権限を持つ job に書き込み可能な cache を持ち込まないため。
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          cache: false
+
+      - name: decide the tag
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          GIVEN: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          if [ "$EVENT" != workflow_run ]; then
+            echo "tag=$GIVEN" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # main にはもっと新しい commit があり、その run が release する。古い方を後から
+          # release すると古いコードが latest になる。
+          if [ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ]; then
+            echo "main has moved past this commit; not releasing it"
+            exit 0
+          fi
+          # 同じ commit の再実行は、別の tag を切らず前回の tag を使う。
+          existing="$(git tag --points-at HEAD --list 'v*' | head -n 1)"
+          echo "tag=${existing:-$(bun scripts/next-tag.ts)}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      # 手動実行では inputs.tag と default branch の HEAD が食い違う。ref を明示しないと
+      # tag と中身が違うバイナリが release に載り、後から見分けられない。tag が無ければ
+      # ここで落ちるので、存在しない tag の release は作られない。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          cache: false
+      - run: bun install --frozen-lockfile
+
+      # bun はクロスコンパイルできるので 4 つとも 1 台で作る。OS ごとに runner を分けると、
+      # 同じ入力から作ったという保証が弱くなる。build の中身は package.json の build script が正。
+      - name: build
+        run: |
+          set -eux
+          bun run build
+          cd dist && sha256sum 9router-cli-* > SHA256SUMS && cat SHA256SUMS
+
+      - name: check the built binary runs (only the one this runner can execute)
+        run: ./dist/9router-cli-linux-x64 --help
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "dist/9router-cli-*"
+
+      # --target は tag が無いとき、build した commit に tag を作る。この token が作った
+      # tag は workflow を起動しないので、上の tag push の trigger で二重に release されない。
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          set -eux
+          gh release create "$TAG" --target "$(git rev-parse HEAD)" --title "$TAG" --generate-notes dist/9router-cli-* dist/SHA256SUMS \
+            || gh release upload "$TAG" dist/9router-cli-* dist/SHA256SUMS --clobber

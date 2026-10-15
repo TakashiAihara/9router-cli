@@ -6,14 +6,31 @@ on:
   pull_request:
 
 jobs:
+  # release.yml と install.sh の誤りは CI では見つからず、tag を切るとき・curl | sh を
+  # 叩かれたときに初めて出る。それを前倒しで捕まえる。
+  static:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # sh に流し込まれるファイルなので、間違えたときの代償が最も大きい
+      - name: shellcheck (install.sh)
+        run: shellcheck install.sh
+      - uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # v1.7.12
+        with:
+          args: -color
+
   check:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
       - run: bun install --frozen-lockfile
       - run: bun run check
