@@ -12,8 +12,10 @@ beforeEach(() => {
 afterEach(() => removeSandbox(sb));
 
 describe("--version", () => {
-  test("開発実行は package.json の版を名乗る", async () => {
-    const r = await runCli(sb, ["--version"]);
+  // 版の識別子は compile 時に入れるもので、実行時の env ではない。開発実行でも、利用者の
+  // env で埋め込み版を名乗ることはない (#7)
+  test("開発実行は、埋め込み用の識別子が env にあっても package.json の版を名乗る", async () => {
+    const r = await runCli(sb, ["--version"], { __BUILD_VERSION__: "0.0.1" });
 
     expect(r.code).toBe(0);
     expect(r.out).toBe(`${pkg.version}\n`);

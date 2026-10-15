@@ -126,5 +126,7 @@ bun run check
 - main に入って CI が通った commit は、すべて `vX.Y.Z-rc.N` として自動で release になる。tag が 1 つも無いときは `package.json` の version から `v<version>-rc.1` を始める
 - 確定版は `vX.Y.Z` の tag を手で push する。release の前に `bun run check` が回り、通らなければ release しない
 - Actions の `workflow_dispatch` は、既に push 済みの tag を release し直すためのもの。新しい tag は切れない
-- 公開済みの release は上書きしない。同じ tag の再実行で `SHA256SUMS` が同じなら何もせず成功、違えば落ちる
+- 公開済みの release は上書きしない。同じ tag の再実行で `SHA256SUMS` が同じなら何もせず成功、違えば落ちる。draft のまま、または資産が欠けている release は成功と見なさない
+- 既に別の commit を指している tag には、その commit のバイナリを release しない (tag を消して送り直すか、次の tag を切る)
+- バイナリは 4 つとも形と埋め込んだ tag を検査してから、release する
 - バイナリの `--version` は release の tag と同じ (`v` を除く)
