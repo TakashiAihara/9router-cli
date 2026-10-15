@@ -25,6 +25,22 @@ program
   .description("9router の combo / provider の管理と、経路ごとの疎通確認")
   .version(VERSION);
 
+// 接続に必要な env を --help にも出す。README の env の表と同じ内容にする (#4)
+program.addHelpText(
+  "after",
+  `
+環境変数:
+  NINE_ROUTER_URL                  9router の URL (http:// か https:// で始める)
+  NINE_ROUTER_DASHBOARD_PASSWORD   dashboard のパスワード
+  NINE_ROUTER_API_KEY              endpoint の API key
+  NINE_ROUTER_ADMIN_TIMEOUT        管理 API の時間切れ (秒。既定 20)
+  NINE_ROUTER_COMMAND_TIMEOUT      設定の *_command の時間切れ (秒。既定 60)
+
+接続先は env か設定ファイルで渡す。設定ファイルは $XDG_CONFIG_HOME/9router-cli/config.toml
+(XDG_CONFIG_HOME が無ければ ~/.config/9router-cli/config.toml)。
+`,
+);
+
 const combos = program.command("combos").description("combo の一覧・段の入れ替え・削除");
 
 combos

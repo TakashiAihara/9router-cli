@@ -79,6 +79,154 @@ describe("providers list", () => {
   });
 });
 
+describe("providers list の name の伏せ方 (#2)", () => {
+  const atName = useFake({
+    connections: [
+      {
+        id: "a1",
+        provider: "openrouter",
+        name: "team@example.org",
+        authType: "apikey",
+        isActive: true,
+        testStatus: "active",
+      },
+      {
+        id: "a2",
+        provider: "kiro",
+        name: "me@example.org",
+        authType: "oauth",
+        isActive: true,
+        testStatus: "active",
+      },
+      { id: "a3", provider: "codex", name: "work", authType: "oauth", isActive: true },
+    ],
+  });
+
+  test("apikey の name は利用者が選んだ表示名なので、@ を含んでいても伏せない", async () => {
+    const r = await atName.run(["providers", "list"]);
+
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(
+      tsv(
+        "a1\topenrouter\tteam@example.org\tapikey\ttrue\tactive\t-\t-\t-\tlocks=0",
+        "a2\tkiro\t-\toauth\ttrue\tactive\t-\t-\t-\tlocks=0",
+        "a3\tcodex\twork\toauth\ttrue\t-\t-\t-\t-\tlocks=0",
+      ),
+    );
+    expect(r.err).toBe("");
+  });
+
+  test("--json でも apikey の name が出て、oauth の email は null", async () => {
+    const r = await atName.run(["providers", "list", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).map((c: { id: string; name: unknown }) => [c.id, c.name])).toEqual([
+      ["a1", "team@example.org"],
+      ["a2", null],
+      ["a3", "work"],
+    ]);
+  });
+
+  test("編集の応答でも apikey の name は伏せない", async () => {
+    const r = await atName.run(["providers", "set", "a1", "--priority", "2", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).name).toBe("team@example.org");
+  });
+
+  test("編集の応答で oauth の email は伏せる", async () => {
+    const r = await atName.run(["providers", "set", "a2", "--priority", "2", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).name).toBeNull();
+    expect(r.out).not.toContain("me@example.org");
+  });
+});
+
+// authType が apikey だと確認できたときだけ @ を含む name を出す。フィールドが無い / null /
+// 別の値 / 9router が将来増やす型は email かもしれないので伏せる
+describe("providers の authType が apikey 以外 / 不明なとき", () => {
+  const maybeEmail = useFake({
+    connections: [
+      // authType が無い (フィールド自体が無い)
+      { id: "u1", provider: "kiro", name: "no-type@example.org", isActive: true },
+      // authType が null
+      { id: "u2", provider: "kiro", name: "null-type@example.org", authType: null, isActive: true },
+      // 9router が将来増やす型。email を入れる型かもしれない
+      {
+        id: "u3",
+        provider: "kiro",
+        name: "future@example.org",
+        authType: "oauth2",
+        isActive: true,
+      },
+      // 大文字小文字が違う値。apikey と見ない
+      {
+        id: "u4",
+        provider: "kiro",
+        name: "ApiKey@example.org",
+        authType: "APIKEY",
+        isActive: true,
+      },
+      // @ が無く、伏せる対象ではない name は型が不明でも出す
+      { id: "u5", provider: "kiro", name: "no-at-name", isActive: true },
+    ],
+  });
+
+  test("list は @ を含む name を全部伏せる (authType が無い / null / 別の値 / 大小文字違い)", async () => {
+    const r = await maybeEmail.run(["providers", "list", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).map((c: { id: string; name: unknown }) => [c.id, c.name])).toEqual([
+      ["u1", null],
+      ["u2", null],
+      ["u3", null],
+      ["u4", null],
+      ["u5", "no-at-name"],
+    ]);
+    for (const leaked of [
+      "no-type@example.org",
+      "null-type@example.org",
+      "future@example.org",
+      "ApiKey@example.org",
+    ]) {
+      expect(r.out).not.toContain(leaked);
+      expect(r.err).not.toContain(leaked);
+    }
+  });
+
+  test("list は @ が無い name を出す (型が不明でも本人を伏せられる物だけを落とす)", async () => {
+    const r = await maybeEmail.run(["providers", "list"]);
+
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(
+      tsv(
+        "u1\tkiro\t-\t-\ttrue\t-\t-\t-\t-\tlocks=0",
+        "u2\tkiro\t-\t-\ttrue\t-\t-\t-\t-\tlocks=0",
+        "u3\tkiro\t-\toauth2\ttrue\t-\t-\t-\t-\tlocks=0",
+        "u4\tkiro\t-\tAPIKEY\ttrue\t-\t-\t-\t-\tlocks=0",
+        "u5\tkiro\tno-at-name\t-\ttrue\t-\t-\t-\t-\tlocks=0",
+      ),
+    );
+  });
+
+  test("編集の応答でも、authType が無ければ email は伏せる", async () => {
+    const r = await maybeEmail.run(["providers", "set", "u1", "--priority", "2", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).name).toBeNull();
+    expect(r.out).not.toContain("no-type@example.org");
+  });
+
+  test("編集の応答でも、authType が別の値なら email は伏せる", async () => {
+    const r = await maybeEmail.run(["providers", "set", "u3", "--priority", "2", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).name).toBeNull();
+    expect(r.out).not.toContain("future@example.org");
+  });
+});
+
 describe("providers add", () => {
   test("鍵の env が空なら exit 2 で、変数名を示して何も POST しない", async () => {
     const r = await ctx.run(["providers", "add", "openrouter", "--key-env", "NOPE_UNSET_VAR"]);
@@ -100,6 +248,44 @@ describe("providers add", () => {
     expect(r.out).toBe(tsv("c-new\topenrouter\tmy-or\tactive"));
     const post = ctx.fake.log.find((l) => l.method === "POST" && l.path === "/api/providers");
     expect(post?.body).toEqual({ provider: "openrouter", apiKey: "sk-new-5588", name: "my-or" });
+    expect(r.out).not.toContain("sk-new-5588");
+    expect(r.err).not.toContain("sk-new-5588");
+  });
+
+  test("--name に @ が入っていても伏せない (利用者が選んだ表示名)", async () => {
+    const r = await ctx.run(
+      ["providers", "add", "openrouter", "--key-env", "NEWKEY", "--name", "team@example.org"],
+      { NEWKEY: "sk-new-5588" },
+    );
+
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(tsv("c-new\topenrouter\tteam@example.org\tactive"));
+  });
+
+  // 偽サーバの add 応答は authType を返さない。list / set では「不明なら伏せる」判定になるが、
+  // add で作る接続は apikey だけなので、選んだ @ を含む表示名は出す (#2)
+  test("add の応答に authType が無いのにも、@ を含む --name を出して、キーだけ伏せる", async () => {
+    const r = await ctx.run(
+      [
+        "providers",
+        "add",
+        "openrouter",
+        "--key-env",
+        "NEWKEY",
+        "--name",
+        "me@team.example",
+        "--json",
+      ],
+      { NEWKEY: "sk-new-5588" },
+    );
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({
+      id: "c-new",
+      provider: "openrouter",
+      name: "me@team.example",
+      testStatus: "active",
+    });
     expect(r.out).not.toContain("sk-new-5588");
     expect(r.err).not.toContain("sk-new-5588");
   });

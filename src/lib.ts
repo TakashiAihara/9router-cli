@@ -43,15 +43,26 @@ function timeoutMs(env: string, defaultSec: number): number {
   return Number.isFinite(n) && n > 0 ? n * 1000 : die(`${env} は正の秒数にする: ${raw}`, 2);
 }
 
-// env で縮められるのはテストが待たずに済ませるため
+// 2 つの env はテスト用の口ではなく、利用者が設定する口として公開する。
+// テストは待たずに済ませたいので縮め、実用では infisical の login や 9router の応答が遅いときに延ばす。
+// README と --help に同じ内容を載せる
 export const adminTimeoutMs = () => timeoutMs("NINE_ROUTER_ADMIN_TIMEOUT", 20);
 export const commandTimeoutMs = () => timeoutMs("NINE_ROUTER_COMMAND_TIMEOUT", 60);
 
+// 9router の手前に proxy があると、届かなかった時に 502 / 503 / 504 が HTML のエラーページで返る。
+// HTTP の応答として届くので区別しないと「相手が否と答えた」(exit 1) と読まれる
+const GATEWAY_STATUS = new Set([502, 503, 504]);
+const HTML_BODY = /^\s*(?:<!doctype\s+html|<html[\s>])/i;
+const isProxyReply = (status: number, raw: string) =>
+  GATEWAY_STATUS.has(status) && HTML_BODY.test(raw);
+
 // 通信の失敗だけを ExitError に変える。応答の形の誤りは変換せず cli.ts の想定外 (exit 70) に届ける
 export async function send(url: string, init: RequestInit, ms: number) {
+  let res: Response;
+  let raw: string;
   try {
-    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
-    return { status: res.status, ok: res.ok, headers: res.headers, raw: await res.text() };
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+    raw = await res.text();
   } catch (e) {
     const timedOut = (e as Error).name === "TimeoutError";
     throw new CommError(
@@ -61,6 +72,13 @@ export async function send(url: string, init: RequestInit, ms: number) {
       timedOut,
     );
   }
+  // proxy のエラーページは HTML が何行も詰まるので、本文をそのまま stderr にも出さない
+  if (isProxyReply(res.status, raw))
+    throw new CommError(
+      `9router に届かなかった (HTTP ${res.status})。手前の proxy が返した応答で、9router 自身の返答ではない: ${url}`,
+      false,
+    );
+  return { status: res.status, ok: res.ok, headers: res.headers, raw };
 }
 
 export const ARROW = " → ";

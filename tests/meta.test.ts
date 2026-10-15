@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { cpSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { makeSandbox, removeSandbox, tsv, useFake } from "./helpers/cli.ts";
-import { adminCalls, STATS, VERSION_INFO, VERSION_INFO_CURRENT } from "./helpers/fake-router.ts";
+import {
+  adminCalls,
+  STATS,
+  VERSION_INFO,
+  VERSION_INFO_CURRENT,
+  VERSION_INFO_UNKNOWN,
+} from "./helpers/fake-router.ts";
 
 const ctx = useFake();
 
@@ -37,6 +43,25 @@ describe("version", () => {
       expect(JSON.parse((await current.run(["version", "--json"])).out)).toEqual(
         VERSION_INFO_CURRENT,
       );
+    });
+  });
+
+  // upstream が npm に届かないと latestVersion が null で hasUpdate も false になる (#3)
+  describe("更新を確認できなかったとき", () => {
+    const unknown = useFake({ versionLatestNull: true });
+
+    test("「更新なし」と読めないよう unknown を出す", async () => {
+      const r = await unknown.run(["version"]);
+
+      expect(r.code).toBe(0);
+      expect(r.out).toBe(tsv("0.5.99\tunknown\tfalse"));
+    });
+
+    test("--json は応答をそのまま返す (null が分かるので書き換えない)", async () => {
+      const r = await unknown.run(["version", "--json"]);
+
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.out)).toEqual(VERSION_INFO_UNKNOWN);
     });
   });
 });
@@ -86,6 +111,24 @@ describe("使い方の誤り", () => {
 
     expect(r.code).toBe(2);
     expect(r.err).not.toBe("");
+    expect(ctx.fake.log).toEqual([]);
+  });
+});
+
+// env の口は README と同じ内容を --help にも出す (#4)
+describe("--help", () => {
+  test("接続と時間切れの env を示す", async () => {
+    const r = await ctx.run(["--help"]);
+
+    expect(r.code).toBe(0);
+    for (const env of [
+      "NINE_ROUTER_URL",
+      "NINE_ROUTER_DASHBOARD_PASSWORD",
+      "NINE_ROUTER_API_KEY",
+      "NINE_ROUTER_ADMIN_TIMEOUT",
+      "NINE_ROUTER_COMMAND_TIMEOUT",
+    ])
+      expect(r.out).toContain(env);
     expect(ctx.fake.log).toEqual([]);
   });
 });
