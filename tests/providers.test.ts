@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { useFake, tsv } from "./helpers/cli.ts";
+import { adminCalls } from "./helpers/fake-router.ts";
 
 const ctx = useFake();
 
@@ -15,9 +16,9 @@ describe("providers list", () => {
     expect(r.code).toBe(0);
     expect(r.out).toBe(
       tsv(
-        "kiro\tAccount 1\toauth\ttrue\tunavailable\t403\t[403]: bearer invalid\t2026-10-02T13:55:18.801Z\tlocks=0",
-        "codex\t-\toauth\ttrue\tactive\t-\t-\t-\tlocks=1",
-        `openrouter\tmy-or\tapikey\tfalse\terror\t500\t${LAST_ERROR_120}\t-\tlocks=0`,
+        "c1\tkiro\tAccount 1\toauth\ttrue\tunavailable\t403\t[403]: bearer invalid\t2026-10-02T13:55:18.801Z\tlocks=0",
+        "c2\tcodex\t-\toauth\ttrue\tactive\t-\t-\t-\tlocks=1",
+        `c3\topenrouter\tmy-or\tapikey\tfalse\terror\t500\t${LAST_ERROR_120}\t-\tlocks=0`,
       ),
     );
     expect(r.err).toBe("");
@@ -39,6 +40,7 @@ describe("providers list", () => {
     expect(r.code).toBe(0);
     expect(JSON.parse(r.out)).toEqual([
       {
+        id: "c1",
         provider: "kiro",
         name: "Account 1",
         authType: "oauth",
@@ -50,6 +52,7 @@ describe("providers list", () => {
         locks: 0,
       },
       {
+        id: "c2",
         provider: "codex",
         name: null,
         authType: "oauth",
@@ -61,6 +64,7 @@ describe("providers list", () => {
         locks: 1,
       },
       {
+        id: "c3",
         provider: "openrouter",
         name: "my-or",
         authType: "apikey",
@@ -158,6 +162,187 @@ describe("providers list の lock の時刻", () => {
     const r = await zoned.run(["providers", "list"], { TZ: "Asia/Tokyo" });
 
     expect(r.code).toBe(0);
-    expect(r.out).toBe(tsv("kiro\tn\tapikey\ttrue\tactive\t-\t-\t-\tlocks=3"));
+    expect(r.out).toBe(tsv("c9\tkiro\tn\tapikey\ttrue\tactive\t-\t-\t-\tlocks=3"));
   });
+});
+
+describe("providers maintenance", () => {
+  test("接続を編集し、送った鍵は出力に出さず、サーバが保存した値を返す", async () => {
+    const r = await ctx.run(
+      [
+        "providers",
+        "set",
+        "c3",
+        "--name",
+        "new name",
+        "--priority",
+        "2",
+        "--active",
+        "--key-env",
+        "NEWKEY",
+        "--json",
+      ],
+      { NEWKEY: "sk-replaced-123" },
+    );
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({
+      id: "c3",
+      provider: "openrouter",
+      name: "new name",
+      isActive: true,
+      priority: 2,
+    });
+    const put = ctx.fake.log.find((l) => l.method === "PUT");
+    expect(put?.path).toBe("/api/providers/c3");
+    expect(put?.body).toEqual({
+      name: "new name",
+      priority: 2,
+      isActive: true,
+      apiKey: "sk-replaced-123",
+    });
+    expect(r.out).not.toContain("sk-replaced-123");
+    expect(r.err).not.toContain("sk-replaced-123");
+  });
+
+  // 偽サーバは実物と異なり token を平文で返す。伏せるのは CLI 側のフィールド選択だけ
+  test("編集の応答が token / clientSecret を持っていても出さない", async () => {
+    const r = await ctx.run(["providers", "set", "c1", "--priority", "3"]);
+
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(tsv("c1\tkiro\tAccount 1\ttrue\t3"));
+    for (const leaked of ["SECRET-", "someone@example.com"]) {
+      expect(r.out).not.toContain(leaked);
+      expect(r.err).not.toContain(leaked);
+    }
+  });
+
+  test("編集の応答の name が email でも出さない", async () => {
+    const r = await ctx.run(["providers", "set", "c2", "--priority", "5", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({
+      id: "c2",
+      provider: "codex",
+      name: null,
+      isActive: true,
+      priority: 5,
+    });
+    expect(r.out).not.toContain("owner@example.com");
+  });
+
+  test("無効化し、編集項目が無ければ通信しない", async () => {
+    const r = await ctx.run(["providers", "set", "c1", "--inactive"]);
+    expect(r.code).toBe(0);
+    expect(ctx.fake.log.find((l) => l.method === "PUT")?.body).toEqual({ isActive: false });
+    const empty = await ctx.run(["providers", "set", "c1"]);
+    expect(empty.code).toBe(2);
+    expect(ctx.fake.log.filter((l) => l.method === "PUT")).toHaveLength(1);
+  });
+
+  test("key の env が空なら exit 2 で、変数名を示して何も送らない", async () => {
+    const r = await ctx.run(["providers", "set", "c3", "--key-env", "NOPE_UNSET_VAR"]);
+
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("NOPE_UNSET_VAR");
+    expect(ctx.fake.log).toEqual([]);
+  });
+
+  test("--name が空なら exit 2 で、何も送らない", async () => {
+    const r = await ctx.run(["providers", "set", "c1", "--name", " "]);
+    expect(r.code).toBe(2);
+    expect(ctx.fake.log).toEqual([]);
+  });
+
+  test("OAuth 接続には API key の更新を送らず、他の項目も書かない", async () => {
+    const r = await ctx.run(["providers", "set", "c1", "--name", "n", "--key-env", "NEWKEY"], {
+      NEWKEY: "secret",
+    });
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("apikey");
+    expect(r.err).toContain("c1");
+    // 型を確かめる GET は行くが、PUT は 1 本も無い (0.5.91 は 200 で黙って捨てる)
+    expect(adminCalls(ctx.fake.log)).toEqual(["POST /api/auth/login", "GET /api/providers/c1"]);
+  });
+
+  test("接続テストは valid で終了コードを分ける", async () => {
+    const bad = await ctx.run(["providers", "test", "c1", "--json"]);
+    expect(bad.code).toBe(1);
+    expect(JSON.parse(bad.out)).toEqual({
+      id: "c1",
+      valid: false,
+      error: "expired",
+      refreshed: false,
+    });
+    const good = await ctx.run(["providers", "test", "c2"]);
+    expect(good.code).toBe(0);
+    expect(good.out).toBe(tsv("c2\tOK\t-\ttrue"));
+  });
+
+  test("ID で接続を削除する", async () => {
+    const r = await ctx.run(["providers", "delete", "c3", "--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({ action: "deleted", id: "c3" });
+    expect(ctx.fake.log.find((l) => l.method === "DELETE")?.path).toBe("/api/providers/c3");
+    const list = await ctx.run(["providers", "list", "--json"]);
+    expect(JSON.parse(list.out).map((c: { id: string }) => c.id)).not.toContain("c3");
+  });
+});
+
+describe("providers maintenance の失敗", () => {
+  const notFound = useFake({ adminErrorStatus: 404 });
+
+  test("管理 API が否と答えたら exit 1 で、サーバの文言を stderr に出す", async () => {
+    for (const args of [
+      ["providers", "set", "c1", "--inactive"],
+      ["providers", "delete", "c1"],
+      ["providers", "test", "c1"],
+    ]) {
+      const r = await notFound.run(args);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("admin exploded");
+      expect(r.out).toBe("");
+    }
+  });
+});
+
+describe("providers test の応答", () => {
+  const messy = useFake({
+    connections: [
+      {
+        id: "m1",
+        provider: "openrouter",
+        name: "messy",
+        authType: "apikey",
+        isActive: true,
+        testReply: {
+          valid: false,
+          error: "401: invalid key\tagain\r\n<html>oops</html>",
+          refreshed: false,
+        },
+      },
+    ],
+  });
+
+  test("error を 1 行にして、接続ごとに 1 行で出す", async () => {
+    const r = await messy.run(["providers", "test", "m1"]);
+
+    expect(r.code).toBe(1);
+    expect(r.out).toBe(tsv("m1\tNG\t401: invalid key again <html>oops</html>\tfalse"));
+  });
+});
+
+describe("providers set の使い方", () => {
+  test("--active と --inactive は同時に指定できない", async () => {
+    const r = await ctx.run(["providers", "set", "c1", "--active", "--inactive"]);
+    expect(r.code).toBe(2);
+    expect(ctx.fake.log).toEqual([]);
+  });
+
+  for (const bad of ["", " ", "-1", "1.5", "abc"]) {
+    test(`--priority ${JSON.stringify(bad)} は通信する前に exit 2`, async () => {
+      const r = await ctx.run(["providers", "set", "c1", "--priority", bad]);
+      expect(r.code).toBe(2);
+      expect(ctx.fake.log).toEqual([]);
+    });
+  }
 });

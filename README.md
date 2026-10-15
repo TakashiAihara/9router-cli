@@ -56,14 +56,47 @@ dashboard_password_command = "infisical run --silent -- printenv NINE_ROUTER_DAS
 - `infisical run ...` は例。値を標準出力に 1 行返すコマンドなら何でもよい (`pass show` / `op read` など)
 - command が非 0 で終わる・空を返す・複数行を返す・時間内に返らないときは、使わずに exit 2 で止まる
 
+## 定期メンテナンス
+
+`NINE_ROUTER_URL` に接続先を設定してから使う。たとえば `https://9router.takashiaihara.site`。管理操作には dashboard パスワード、`models` と `probe` には endpoint API key が必要。
+
+```sh
+9router-cli providers list
+9router-cli providers test PROVIDER_ID
+9router-cli providers set PROVIDER_ID --inactive
+9router-cli providers set PROVIDER_ID --name backup --priority 2 --active
+9router-cli providers set PROVIDER_ID --key-env NEW_PROVIDER_KEY
+9router-cli providers add openrouter --key-env NEW_PROVIDER_KEY --name backup
+9router-cli providers delete PROVIDER_ID
+
+9router-cli models --prefix kr
+9router-cli probe kr/model-name --combo free-forever
+9router-cli probe --all-combos --json
+9router-cli combos list
+9router-cli combos set free-forever kr/model-name oc/model-name
+9router-cli combos set new-combo kr/model-name --create
+9router-cli combos delete new-combo
+```
+
+`PROVIDER_ID` は `providers list` の先頭列にある接続 ID に差し替える。`providers set` / `delete` / `test` はその ID で対象を絞る。列は ID / provider / name / authType / isActive / testStatus / errorCode / lastError / expiresAt / locks。`expiresAt` が過去の oauth 接続と `testStatus` が `error` / `unavailable` の行が、認証切れの候補。
+
+- `providers set` は ID / provider / name / isActive / priority の 5 列を返す。`name` が email の接続は `-` になる (list / add / set のいずれも token・email・clientSecret を出さない)
+- `providers set --key-env` は API key 型の接続にだけ使える。0.5.91 の管理 API は `authType` が `apikey` 以外だと **200 を返して新しい鍵を黙って捨てる** ので、CLI は接続の型を GET で確かめてから書き、送らずに exit 2 で止める。止まったときは他の項目も書かないので、`--key-env` を外せば名前・優先度・有効状態だけの編集はできる
+- `providers test` は接続単体の検証 (`valid` で 0 / 1 を分ける)。`probe` はモデルと combo を実際に呼ぶ検証。期限切れや提供終了モデルを調べるときは `probe --all-combos` の結果で失敗した段を確認し、`combos set` で差し替える
+- `providers delete` と `combos delete` は確認を挟まず即削除する。取り消しはダッシュボードでの手作業。ID を間違えると復元できないので、`providers list` の ID を写してから実行する
+
+`combos set` は段を全置換する。同じ combo を複数ホストから同時に更新すると、後の更新が先の更新を上書きすることがある。`combos set` / `providers set` が出す値は依頼した値ではなく、サーバが保存したと返した値 (`combos set` は `after`、`providers set` は各列、`combos set --create` も作成応答)。
+
 ## 終了コード
 
 | コード | 意味 |
 | --- | --- |
 | 0 | 成功 |
-| 1 | 相手が否と答えた。`probe` の NG、管理 API のエラー、`version` のエラー |
+| 1 | 相手が否と答えた。`probe` の NG、`providers test` の NG、管理 API のエラー、`version` のエラー |
 | 2 | 使い方・秘密・設定・通信の誤り。`login` と `models` の失敗も、status を問わずここ |
 | 70 | 想定外の例外。応答の形が想定と違うときなど。1 と 2 のどちらにも見せないため別の値 |
+
+`providers set --key-env` を `apikey` 以外の接続に当てたときの exit 2 は、書き込みをせずに止めたためのもの。9router なら 200 を返して新しい鍵を黙って捨てるので、拒んだのは CLI 側の判定になる。
 
 ## 開発
 

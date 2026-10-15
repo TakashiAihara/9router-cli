@@ -2,6 +2,7 @@ import { admin, ARROW, die, guard, json, login, print } from "../lib.ts";
 
 export type CombosListOptions = { json: boolean };
 export type CombosSetOptions = { name: string; models: string[]; create: boolean; json: boolean };
+export type CombosDeleteOptions = { name: string; json: boolean };
 type Combo = { id: string; name: string; models: string[] };
 const list = async (c: string) => (await admin(c, "GET", "/api/combos")).combos as Combo[];
 
@@ -25,9 +26,19 @@ export const runCombosSet = guard(async (o: CombosSetOptions) => {
       print(`after: ${put.models.join(ARROW)}`);
     }
   } else if (o.create) {
-    await admin(cookie, "POST", "/api/combos", { name: o.name, models: o.models });
-    if (o.json) json({ action: "created", name: o.name, models: o.models });
-    else print(`created: ${o.name}: ${o.models.join(ARROW)}`);
+    const created = await admin(cookie, "POST", "/api/combos", { name: o.name, models: o.models });
+    if (o.json) json({ action: "created", name: created.name, models: created.models });
+    else print(`created: ${created.name}: ${created.models.join(ARROW)}`);
   } else die(`combo '${o.name}' が無い。新しく作るなら --create を付ける`, 2);
+  return 0;
+});
+
+export const runCombosDelete = guard(async (o: CombosDeleteOptions) => {
+  const cookie = await login();
+  const combo =
+    (await list(cookie)).find((c) => c.name === o.name) ?? die(`combo '${o.name}' が無い`, 2);
+  await admin(cookie, "DELETE", `/api/combos/${encodeURIComponent(combo.id)}`);
+  if (o.json) json({ action: "deleted", name: combo.name, models: combo.models });
+  else print(`deleted: ${combo.name}: ${combo.models.join(ARROW)}`);
   return 0;
 });
