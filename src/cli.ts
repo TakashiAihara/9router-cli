@@ -11,6 +11,7 @@ const JSON_FLAG = "--json";
 const JSON_HELP = "TSV ではなく JSON を stdout に出す";
 
 const program = new Command();
+program.exitOverride((e) => process.exit(e.exitCode === 0 ? 0 : 2));
 
 program
   .name("9router-cli")

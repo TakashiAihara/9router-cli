@@ -1,5 +1,13 @@
+import { baseUrl, cell, errorText, die, guard, json, print } from "../lib.ts";
+
 export type VersionOptions = { json: boolean };
 
-export async function runVersion(_opts: VersionOptions): Promise<number> {
-  throw new Error("not implemented");
-}
+export const runVersion = guard(async (o: VersionOptions) => {
+  const res = await fetch(`${baseUrl()}/api/version`);
+  const raw = await res.text();
+  if (!res.ok) die(errorText(raw), 1);
+  const v = JSON.parse(raw);
+  if (o.json) json(v);
+  else print([v.currentVersion, v.latestVersion, v.hasUpdate].map(cell).join("\t"));
+  return 0;
+});
