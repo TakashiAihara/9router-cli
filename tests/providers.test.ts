@@ -134,3 +134,29 @@ describe("providers add", () => {
     expect(ctx.fake.log).toEqual([]);
   });
 });
+
+describe("providers list の lock の時刻", () => {
+  const naive = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString().slice(0, 19);
+  const zoned = useFake({
+    connections: [
+      {
+        id: "c9",
+        provider: "kiro",
+        name: "n",
+        authType: "apikey",
+        isActive: true,
+        testStatus: "active",
+        modelLock_future: naive(60 * 60 * 1000),
+        modelLock_past: naive(-60 * 60 * 1000),
+        modelLock_offset: `${naive(60 * 60 * 1000 + 9 * 60 * 60 * 1000)}+09:00`,
+      },
+    ],
+  });
+
+  test("タイムゾーンの無い時刻は UTC として読む (JST の host でも 9 時間ずれない)", async () => {
+    const r = await zoned.run(["providers", "list"], { TZ: "Asia/Tokyo" });
+
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(tsv("kiro\tn\tapikey\ttrue\tactive\t-\t-\t-\tlocks=2"));
+  });
+});

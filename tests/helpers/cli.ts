@@ -111,10 +111,34 @@ export function writeSecretScript(sb: Sandbox): { script: string; log: string } 
     `#!/bin/sh
 echo "$1" >> "${log}"
 if [ -n "$CMD_FAIL" ]; then echo "error: machine identity login failed"; exit 1; fi
+if [ -n "$CMD_STDERR" ]; then echo "first stderr line" >&2; echo "identity endpoint returned 503" >&2; exit 1; fi
+if [ -n "$CMD_SLEEP" ]; then sleep "$CMD_SLEEP"; fi
 if [ "$1" = pw ]; then v='${DASHBOARD_PASSWORD}'; else v='${API_KEY}'; fi
 if [ -n "$CMD_NL" ]; then printf 'notice: update available\\n%s\\n' "$v"; exit 0; fi
 if [ -n "$CMD_CR" ]; then printf '%s\\r\\n' "$v"; exit 0; fi
+if [ -n "$CMD_CR_MID" ]; then printf 'a\\rb\\n'; exit 0; fi
 if [ -n "$CMD_EMPTY" ]; then exit 0; fi
+printf '%s\\n' "$v"
+`,
+  );
+  chmodSync(script, 0o755);
+  return { script, log };
+}
+
+// 兄弟の秘密が子の env に漏れていないかを log に残す秘密コマンドの偽。値そのものは書かない
+export function writeLeakCheckScript(sb: Sandbox): { script: string; log: string } {
+  const script = join(sb.dir, "leak.sh");
+  const log = join(sb.dir, "leak.log");
+  writeFileSync(
+    script,
+    `#!/bin/sh
+if [ "$1" = pw ]; then
+  v='${DASHBOARD_PASSWORD}'
+  if [ -n "$NINE_ROUTER_API_KEY" ]; then echo "pw sees key" >> "${log}"; else echo "pw clean" >> "${log}"; fi
+else
+  v='${API_KEY}'
+  if [ -n "$NINE_ROUTER_DASHBOARD_PASSWORD" ]; then echo "key sees pw" >> "${log}"; else echo "key clean" >> "${log}"; fi
+fi
 printf '%s\\n' "$v"
 `,
   );

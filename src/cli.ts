@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { Command, Option } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
+import pkg from "../package.json" with { type: "json" };
 import { runCombosList, runCombosSet } from "./commands/combos.ts";
 import { runModels } from "./commands/models.ts";
 import { runProbe } from "./commands/probe.ts";
@@ -16,7 +17,7 @@ program.exitOverride((e) => process.exit(e.exitCode === 0 ? 0 : 2));
 program
   .name("9router-cli")
   .description("9router の combo / provider の管理と、経路ごとの疎通確認")
-  .version("0.1.0");
+  .version(pkg.version);
 
 const combos = program.command("combos").description("combo の一覧と段の入れ替え");
 
@@ -87,13 +88,19 @@ program
 
 const collect = (value: string, previous: string[]): string[] => [...previous, value];
 
+const positiveSeconds = (value: string): number => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) throw new InvalidArgumentError("正の数を指定する");
+  return n;
+};
+
 program
   .command("probe")
   .description("モデル / combo / combo の各段を 1 本ずつ当てて、HTTP status で OK / NG を判定する")
   .argument("[models...]", "当てるモデル ID")
   .option("--combo <name>", "combo とその各段を当てる (繰り返せる)", collect, [])
   .option("--all-combos", "全 combo とその各段を当てる")
-  .option("--timeout <sec>", "1 本ごとの時間切れ (秒)", Number, 60)
+  .option("--timeout <sec>", "1 本ごとの時間切れ (秒)", positiveSeconds, 60)
   .option(JSON_FLAG, JSON_HELP)
   .action(
     async (
@@ -129,7 +136,8 @@ program
     process.exit(await runUsage({ period: opts.period, json: opts.json === true }));
   });
 
-// 1 (probe の NG) と 2 (使い方・秘密・通信の誤り) は意味を持つ終了コードなので、
+// 1 は相手が否と答えた (probe の NG・管理 API のエラー・version のエラー)、
+// 2 は使い方・秘密・通信・認証 (login と models の鍵の拒否) の誤りで、どちらも意味を持つ終了コードなので、
 // 想定外の例外がそのどちらかに見えないよう別の値で落とす
 program.parseAsync().catch((e: unknown) => {
   process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);

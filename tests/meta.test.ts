@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { tsv, useFake } from "./helpers/cli.ts";
+import { cpSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { makeSandbox, removeSandbox, tsv, useFake } from "./helpers/cli.ts";
 import { adminCalls, STATS, VERSION_INFO, VERSION_INFO_CURRENT } from "./helpers/fake-router.ts";
 
 const ctx = useFake();
@@ -85,5 +87,40 @@ describe("使い方の誤り", () => {
     expect(r.code).toBe(2);
     expect(r.err).not.toBe("");
     expect(ctx.fake.log).toEqual([]);
+  });
+});
+
+describe("usage の period", () => {
+  for (const period of ["60d", "all"]) {
+    test(`${period} を query に渡す`, async () => {
+      const r = await ctx.run(["usage", "--period", period]);
+
+      expect(r.code).toBe(0);
+      expect(adminCalls(ctx.fake.log)).toEqual([
+        "POST /api/auth/login",
+        `GET /api/usage/stats?period=${period}`,
+      ]);
+    });
+  }
+});
+
+describe("--version", () => {
+  test("package.json の version を出す (別の version を置いた複製で確かめる)", async () => {
+    const repo = resolve(import.meta.dir, "..");
+    const sb = makeSandbox();
+    try {
+      cpSync(join(repo, "src"), join(sb.dir, "src"), { recursive: true });
+      symlinkSync(join(repo, "node_modules"), join(sb.dir, "node_modules"));
+      writeFileSync(join(sb.dir, "package.json"), JSON.stringify({ name: "x", version: "7.7.7" }));
+
+      const r = Bun.spawnSync([process.execPath, join(sb.dir, "src/cli.ts"), "--version"], {
+        env: { PATH: process.env.PATH ?? "", HOME: sb.home },
+      });
+
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.toString()).toBe("7.7.7\n");
+    } finally {
+      removeSandbox(sb);
+    }
   });
 });

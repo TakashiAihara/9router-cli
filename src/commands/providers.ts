@@ -8,12 +8,13 @@ export type ProvidersAddOptions = {
   json: boolean;
 };
 
+// タイムゾーンの無い時刻は UTC として読む (Date.parse は host の local time で読む)
+const asUtc = (v: string) => (/T[\d:.]+$/.test(v) ? `${v}Z` : v);
+
 const locks = (c: Record<string, unknown>) =>
-  Object.entries(c).filter(([k, v]) => {
-    if (!k.startsWith("modelLock_") || !v) return false;
-    const t = Date.parse(String(v));
-    return !Number.isNaN(t) && t > Date.now();
-  }).length;
+  Object.entries(c).filter(
+    ([k, v]) => k.startsWith("modelLock_") && v && Date.parse(asUtc(String(v))) > Date.now(),
+  ).length;
 
 export const runProvidersList = guard(async (o: ProvidersListOptions) => {
   const cookie = await login();
@@ -58,7 +59,7 @@ export const runProvidersAdd = guard(async (o: ProvidersAddOptions) => {
   const payload: Record<string, unknown> = { provider: o.provider, apiKey: key };
   if (o.name) payload.name = o.name;
   const obj = await admin(cookie, "POST", "/api/providers", payload);
-  const c = obj.connection ?? obj;
+  const c = obj.connection;
   if (o.json) json({ id: c.id, provider: c.provider, name: c.name, testStatus: c.testStatus });
   else print(["id", "provider", "name", "testStatus"].map((k) => cell(c[k])).join("\t"));
   return 0;

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { normalizeElapsed, tsv, useFake } from "./helpers/cli.ts";
-import { adminCalls, API_KEY, chatModels, NONEXISTENT } from "./helpers/fake-router.ts";
+import { adminCalls, API_KEY, chatModels, NONEXISTENT, startFake } from "./helpers/fake-router.ts";
 
 const ctx = useFake();
 
@@ -266,5 +266,45 @@ describe("probe の対照が判別能力を持たないとき", () => {
     expect(r.err).toContain("200");
     expect(r.out).toBe(`CTRL\t200\t${ctrl("ocg")}\n`);
     expect(chatModels(leaky.fake.log)).toEqual([ctrl("ocg")]);
+  });
+});
+
+describe("probe の --timeout", () => {
+  for (const bad of ["abc", "-1", "0", "Infinity"]) {
+    test(`${bad} は使い方の誤りとして通信する前に exit 2`, async () => {
+      const r = await ctx.run(["probe", "ocg/good", "--timeout", bad]);
+
+      expect(r.code).toBe(2);
+      expect(r.err).toContain("--timeout");
+      expect(r.err).not.toContain("通信に失敗");
+      expect(ctx.fake.log).toEqual([]);
+    });
+  }
+});
+
+describe("probe の対象が 0 件のとき", () => {
+  const empty = useFake({ initialCombos: [] });
+
+  test("--all-combos で combo が 0 本なら何も当てずに exit 2", async () => {
+    const r = await empty.run(["probe", "--all-combos"]);
+
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("0 件");
+    expect(r.out).toBe("");
+    expect(chatModels(empty.fake.log)).toEqual([]);
+  });
+});
+
+describe("probe がつながらない接続先に当たったとき", () => {
+  test("時間切れの NG にせず、通信の誤りとして exit 2", async () => {
+    const dead = startFake();
+    const url = dead.url;
+    dead.stop();
+
+    const r = await ctx.run(["probe", "ocg/good"], { NINE_ROUTER_URL: url });
+
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("通信に失敗");
+    expect(r.out).toBe("");
   });
 });

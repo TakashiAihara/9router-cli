@@ -124,3 +124,26 @@ describe("combos set", () => {
     expect(ctx.fake.log).toEqual([]);
   });
 });
+
+describe("combos set が出す after", () => {
+  const stored = useFake({ storedModels: ["stored-a", "stored-b"] });
+
+  test("依頼した段ではなく、サーバが保存したと返した段を出す", async () => {
+    const r = await stored.run(["combos", "set", "shared", "asked-x", "asked-y"]);
+
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(tsv("before: oc/good → ocg/good", "after: stored-a → stored-b"));
+  });
+
+  test("--json の after も同じ", async () => {
+    const r = await stored.run(["combos", "set", "shared", "asked-x", "asked-y", "--json"]);
+
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({
+      action: "updated",
+      name: "shared",
+      before: ["oc/good", "ocg/good"],
+      after: ["stored-a", "stored-b"],
+    });
+  });
+});

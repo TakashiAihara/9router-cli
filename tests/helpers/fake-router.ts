@@ -35,6 +35,17 @@ export type FakeOptions = {
   // 実在しない ID にも 200 を返す (対照が判別能力を持たない状態)
   leaky?: boolean;
   upToDate?: boolean;
+  // 応答を返さないパス (pathname)。時間切れの検査用
+  hang?: string[];
+  // 認証済みの /api/* が返す status。管理 API のエラーの検査用
+  adminErrorStatus?: number;
+  versionStatus?: number;
+  // GET /api/combos の本文を丸ごと差し替える (形の違う応答の検査用)
+  combosReply?: unknown;
+  initialCombos?: { id: string; name: string; kind: null; models: string[] }[];
+  // PUT /api/combos/:id が、依頼本文に関わらず保存したと返す段
+  storedModels?: string[];
+  connections?: Record<string, unknown>[];
 };
 
 export type Fake = { url: string; log: Logged[]; stop: () => void };
@@ -99,12 +110,12 @@ const sse = (text: string) =>
 
 export function startFake(options: FakeOptions = {}): Fake {
   const log: Logged[] = [];
-  const combos = [
+  const combos = options.initialCombos ?? [
     { id: "id-ff", name: "free-forever", kind: null, models: ["kr/dead", "oc/good"] },
     { id: "id-tr", name: "translate", kind: null, models: ["ocg/good", "ocg/sse"] },
     { id: "id-sh", name: "shared", kind: null, models: ["oc/good", "ocg/good"] },
   ];
-  const conns = [
+  const conns = options.connections ?? [
     {
       id: "c1",
       provider: "kiro",
@@ -166,7 +177,12 @@ export function startFake(options: FakeOptions = {}): Fake {
       const m = req.method;
       const b = (body ?? {}) as Record<string, unknown>;
 
+      if (options.hang?.includes(p)) await new Promise(() => {});
+
       if (p === "/api/version" && m === "GET") {
+        if (options.versionStatus) {
+          return Response.json({ error: "version unavailable" }, { status: options.versionStatus });
+        }
         return Response.json(options.upToDate ? VERSION_INFO_CURRENT : VERSION_INFO);
       }
       if (p === "/api/auth/login" && m === "POST") {
@@ -185,7 +201,12 @@ export function startFake(options: FakeOptions = {}): Fake {
         if (!(cookie ?? "").includes(SESSION_COOKIE)) {
           return Response.json({ error: "Unauthorized" }, { status: 401 });
         }
-        if (p === "/api/combos" && m === "GET") return Response.json({ combos });
+        if (options.adminErrorStatus) {
+          return Response.json({ error: "admin exploded" }, { status: options.adminErrorStatus });
+        }
+        if (p === "/api/combos" && m === "GET") {
+          return Response.json(options.combosReply ?? { combos });
+        }
         if (p === "/api/combos" && m === "POST") {
           const c = {
             id: "id-new",
@@ -200,7 +221,7 @@ export function startFake(options: FakeOptions = {}): Fake {
           const id = decodeURIComponent(p.slice("/api/combos/".length));
           const c = combos.find((x) => x.id === id);
           if (!c) return Response.json({ error: "Combo not found" }, { status: 404 });
-          Object.assign(c, b);
+          Object.assign(c, b, options.storedModels ? { models: options.storedModels } : {});
           return Response.json(c);
         }
         if (p === "/api/providers" && m === "GET") return Response.json({ connections: conns });

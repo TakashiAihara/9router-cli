@@ -41,3 +41,12 @@ describe("models", () => {
     expect(r.out).toBe("");
   });
 });
+
+describe("models --prefix の末尾の /", () => {
+  test("落としてから絞る (oc/ は oc と同じ)", async () => {
+    const r = await ctx.run(["models", "--prefix", "oc/"]);
+
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(tsv("oc/good"));
+  });
+});
