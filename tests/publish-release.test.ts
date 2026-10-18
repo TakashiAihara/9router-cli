@@ -93,6 +93,15 @@ describe("publish-release.sh", () => {
     expect(ghCalls()).toContain(`--target ${head()} --latest=false `);
   });
 
+  // 比べる相手が 1 つも無い状態。tag を 1 つも持たない最初の release もここを通るので、
+  // 比較が対象を見つけられずに落ちてはいけない (#15)
+  test("tag が 1 つも無い checkout でも、版番号の比較で止めない", () => {
+    const r = publish({ MAIN_SHA: "0123456789abcdef0123456789abcdef01234567", VIEW: "1" });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`release create ${TAG} --target ${head()} --latest=false `);
+  });
+
   test("MAIN_SHA が無ければ release を作らずに止まる", () => {
     const r = publish({ MAIN_SHA: "" });
 
@@ -225,6 +234,16 @@ describe("publish-release.sh: 古い commit の新しい版番号 (#15)", () => 
     expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
   });
 
+  test("手で push されて checkout に入っている新しいタグでも、自分自身とは比べずに止める", () => {
+    git("tag", "v0.2.0");
+
+    const r = publish({ TAG: "v0.2.0", MAIN_SHA: mainSha, VIEW: "1" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.2.0-rc.3");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+  });
+
   test("既存の最大より低い版番号は古い commit からも公開し、Latest にしない", () => {
     const r = publish({ TAG: "v0.0.9", MAIN_SHA: mainSha, VIEW: "1" });
 
@@ -240,6 +259,17 @@ describe("publish-release.sh: 古い commit の新しい版番号 (#15)", () => 
 
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toContain("already published");
+  });
+
+  // rc の n は文字列ではない。rc.10 と rc.9 を比べるので、並べ替えを文字列にすると大小が逆
+  test("rc の番号は数値として比べる", () => {
+    git("tag", "v0.2.0-rc.9");
+
+    const r = publish({ TAG: "v0.2.0-rc.10", MAIN_SHA: mainSha, VIEW: "1" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.2.0-rc.9");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
   });
 
   test("main の先頭への通常の正式版は Latest にする", () => {

@@ -184,8 +184,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # main の先頭と比べるためと、publish-release.sh が「その tag が既に誰のものか」を
-          # 確かめるため。checkout は shallow なので tag は勝手には取られない。
+          # main の先頭と比べるためと、publish-release.sh が「その tag が既に誰のものか」と
+          # 「既存の tag のどれより高い版番号か」を確かめるため。checkout は shallow なので
+          # tag は勝手には取られない。
           git fetch --no-tags origin \
             '+refs/heads/main:refs/remotes/origin/main' \
             '+refs/tags/*:refs/tags/*'

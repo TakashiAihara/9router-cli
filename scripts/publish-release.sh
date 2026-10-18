@@ -31,8 +31,66 @@ if tagged="$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" 2>/dev/null)"
   fi
 fi
 
+# Puts a version number into the fields version_gt compares: major, minor, patch, then a rank
+# and the rc count. A final version has to sit above every rc of itself, so it carries a rank
+# the rcs do not, and the counts are compared as numbers so rc.10 is above rc.9, not below it.
+version_key() {
+  rest="${1#v}"
+  base="${rest%%-rc.*}"
+  if [ "$rest" = "$base" ]; then
+    rank=1
+    rc=0
+  else
+    rank=0
+    rc="${rest#*-rc.}"
+  fi
+  numbers="${base#*.}"
+  printf '%s %s %s %s %s' "${base%%.*}" "${numbers%%.*}" "${numbers#*.}" "$rank" "$rc"
+}
+
+# Whether $1 is a higher semver than $2. Stops at the first field that differs, so that a bigger
+# rc count cannot win over a smaller patch number.
+version_gt() {
+  left="$(version_key "$1")"
+  right="$(version_key "$2")"
+  fields=5
+  while [ "$fields" -gt 0 ]; do
+    a="${left%% *}"
+    b="${right%% *}"
+    left="${left#* }"
+    right="${right#* }"
+    if [ "$a" -gt "$b" ]; then return 0; fi
+    if [ "$a" -lt "$b" ]; then return 1; fi
+    fields=$((fields - 1))
+  done
+  return 1
+}
+
 # install.sh は Latest を配るので、main の先頭でない commit の release を Latest にしない
 if [ "$head" = "$MAIN_SHA" ]; then latest=true; else latest=false; fi
+
+# --latest=false keeps main out of GitHub's latest, but the number still reads as the newest
+# version to whoever picks a release by the highest tag, and keeps reading that way until main
+# ships something higher. Only for a release that does not exist yet: an already published tag
+# is a fact from before this commit ran, and a version below the highest existing tag is a
+# backport, which is what the number is there to say.
+if [ "$head" != "$MAIN_SHA" ] && ! gh release view "$TAG" >/dev/null 2>&1; then
+  tags="$(git tag --list 'v*')"
+  # grep は一致 0 件で 1 を返す。それだけを空として受けて、tag のない最初の release も通す。
+  # git が失敗した時は上の代入で止まるので、比較の相手不在を空と読ませない。
+  # 手で push された tag は既に checkout に入っている。自分自身を比べる相手から外さないと
+  # 「最も高いのは自分自身」で止まらないので、誰も負けていない版も毎回通ってしまう
+  existing="$(printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' | grep -Fxv -- "$TAG")" || existing=""
+  highest=""
+  for other in $existing; do
+    if [ -z "$highest" ] || version_gt "$other" "$highest"; then highest="$other"; fi
+  done
+  if [ -n "$highest" ] && version_gt "$TAG" "$highest"; then
+    echo "tag ${TAG} is higher than ${highest}, the highest tag in this checkout;" >&2
+    echo "not publishing it from ${head}, which is not main's head" >&2
+    exit 1
+  fi
+fi
 
 if gh release create "$TAG" --target "$head" --latest="$latest" --title "$TAG" --generate-notes \
   dist/9router-cli-* dist/SHA256SUMS; then

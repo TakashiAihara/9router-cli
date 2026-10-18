@@ -9,7 +9,10 @@ const read = (file: string) => readFileSync(join(dir, file), "utf8");
 const release = () =>
   Bun.YAML.parse(read("release.yml")) as {
     concurrency: { group: string; "cancel-in-progress": boolean };
+    jobs: { build: { steps: { name: string; run?: string }[] } };
   };
+const releaseStep = () =>
+  release().jobs.build.steps.find((step) => step.name === "release")?.run ?? "";
 
 const REPO = "TakashiAihara/9router-cli";
 
@@ -136,5 +139,18 @@ describe("action の固定", () => {
     }
 
     expect(uses.length).toBeGreaterThan(0);
+  });
+});
+
+// publish-release.sh は main の先頭と比べるのと、既存の tag のどれより高い版番号かを確かめる。
+// build job の checkout は shallow なので、この 2 つは release step の fetch が全部取って初めて
+// できる。tag を取れずに release すると、版番号の比較は「0 個の tag」と読んで常に許す
+describe("release.yml の build job", () => {
+  test("publish-release.sh を走らせる前に全 tag を fetch する", () => {
+    const run = releaseStep();
+
+    expect(run).toContain("+refs/tags/*:refs/tags/*");
+    expect(run).toContain("+refs/heads/main:refs/remotes/origin/main");
+    expect(run.indexOf("+refs/tags/*")).toBeLessThan(run.indexOf("sh scripts/publish-release.sh"));
   });
 });
