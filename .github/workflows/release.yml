@@ -92,7 +92,7 @@ jobs:
 
       # setup-bun は .mise.toml を読めない (.tool-versions と package.json と .bun-version
       # だけ) ので、CI と同じ mise で bun の版を .mise.toml 1 か所に保つ。cache を切るのは、
-      # この run で cache を読む job がないため (署名は mise を通さない publish だけ)。
+      # 他の run (PR など) が書いた cache を、署名して出すバイナリの build に読ませないため。
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
           cache: false
@@ -192,7 +192,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-binaries
-          # run が終われば誰も読まないので、短い方を選ぶ
+          # 読むのは同じ run の verify と publish だけなので、短い方を選ぶ
           retention-days: 7
           if-no-files-found: error
           path: |
@@ -204,8 +204,7 @@ jobs:
     if: needs.tag.outputs.tag != ''
     permissions:
       contents: read
-    # 1 つが失敗したときに他を止めると、どれが動かなかったかが run から読めなくなる。
-    # 4 つとも回す。1 つが落ちると publish 全体が止まるので、残りの 3 つの結果も同時に読める
+    # 1 つが失敗しても残りを止めず、4 つとも結果を run に残す (publish はどれか 1 つの失敗で止まる)
     strategy:
       fail-fast: false
       matrix:

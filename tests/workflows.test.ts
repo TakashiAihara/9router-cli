@@ -304,7 +304,13 @@ describe("release.yml: build の上げる artifact (#13)", () => {
 });
 
 describe("release.yml: 検査した commit と成果物をそのまま公開する (#13 の 2 周目)", () => {
-  type Step = { name?: string; uses?: string; run?: string; with?: Record<string, unknown> };
+  type Step = {
+    id?: string;
+    name?: string;
+    uses?: string;
+    run?: string;
+    with?: Record<string, unknown>;
+  };
   type AnyJob = {
     needs?: string | string[];
     if?: string;
@@ -323,7 +329,10 @@ describe("release.yml: 検査した commit と成果物をそのまま公開す�
   test("tag job が検査した commit の SHA を出し、build / verify / publish はその SHA を checkout する", () => {
     const all = jobs();
 
-    expect(all.tag!.outputs?.sha).toBeTruthy();
+    expect(all.tag!.outputs?.sha).toBe("${{ steps.commit.outputs.sha }}");
+    const commit = all.tag!.steps.find((s) => s.id === "commit");
+    expect(commit?.run).toContain('sha="$(git rev-parse HEAD)"');
+    expect(commit?.run).toContain('echo "sha=$sha" >> "$GITHUB_OUTPUT"');
     for (const name of ["build", "verify", "publish"]) {
       const job = all[name]!;
       expect(needs(job)).toContain("tag");
@@ -370,7 +379,7 @@ describe("release.yml: 検査した commit と成果物をそのまま公開す�
   test("publish は status 関数で verify の失敗を通さず、全ファイルを照合し、TAG を受け取る", () => {
     const publish = jobs().publish!;
 
-    expect(publish.if ?? "").not.toMatch(/always\(\)|failure\(\)|cancelled\(\)/);
+    expect(publish.if).toBe("needs.tag.outputs.tag != ''");
     expect(runs(publish)).toMatch(/^\s*sha256sum -c SHA256SUMS\s*$/m);
     expect(publish.env?.TAG).toBe("${{ needs.tag.outputs.tag }}");
   });
