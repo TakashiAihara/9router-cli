@@ -203,3 +203,69 @@ describe("release.yml の tag の形", () => {
     );
   });
 });
+
+describe("release.yml: 公開前に 4 種を各 runner で動かす (#13)", () => {
+  type Step = { name?: string; uses?: string; run?: string; with?: Record<string, unknown> };
+  type AnyJob = {
+    needs?: string | string[];
+    "runs-on"?: string;
+    permissions?: Record<string, string>;
+    strategy?: { "fail-fast"?: boolean; matrix?: { include?: Record<string, string>[] } };
+    steps: Step[];
+  };
+  const jobs = () => (Bun.YAML.parse(read("release.yml")) as { jobs: Record<string, AnyJob> }).jobs;
+  const needs = (job: AnyJob) => ([] as string[]).concat(job.needs ?? []);
+  const runs = (job: AnyJob) => job.steps.map((s) => s.run ?? "").join("\n");
+  const uses = (job: AnyJob, action: string) =>
+    job.steps.some((s) => s.uses?.startsWith(`${action}@`));
+
+  test("verify job は 4 種それぞれを、その OS / CPU の runner で走らせる", () => {
+    const verify = jobs().verify!;
+    const pairs = (verify.strategy?.matrix?.include ?? [])
+      .map((m) => `${m.target} ${m.runner}`)
+      .sort();
+
+    expect(pairs).toEqual([
+      "darwin-arm64 macos-15",
+      "darwin-x64 macos-15-intel",
+      "linux-arm64 ubuntu-24.04-arm",
+      "linux-x64 ubuntu-24.04",
+    ]);
+    expect(verify["runs-on"]).toBe("${{ matrix.runner }}");
+    expect(verify.strategy?.["fail-fast"]).toBe(false);
+  });
+
+  test("verify は build が上げた成果物を落として検査し、自分では build しない", () => {
+    const { build, verify } = jobs();
+
+    expect(uses(build!, "actions/upload-artifact")).toBe(true);
+    expect(needs(verify!)).toContain("build");
+    expect(uses(verify!, "actions/download-artifact")).toBe(true);
+    expect(runs(verify!)).not.toContain("bun build");
+    expect(runs(verify!)).not.toContain("scripts/build.ts");
+    expect(runs(verify!)).toContain("scripts/run-binary.sh");
+    expect(runs(verify!)).toMatch(/sha256sum|shasum/);
+  });
+
+  test("公開は全部の verify が通ってからで、同じ成果物を落として SHA256SUMS を照合する", () => {
+    const { publish } = jobs();
+
+    expect(needs(publish!)).toEqual(expect.arrayContaining(["build", "verify"]));
+    expect(uses(publish!, "actions/download-artifact")).toBe(true);
+    expect(runs(publish!)).toMatch(/sha256sum -c|shasum -a 256 -c/);
+    expect(uses(publish!, "actions/attest-build-provenance")).toBe(true);
+    expect(runs(publish!)).toContain("sh scripts/publish-release.sh");
+  });
+
+  test("書き込みの権限を持つのは公開の job だけ", () => {
+    const { build, verify, publish } = jobs();
+
+    expect(build!.permissions?.contents ?? "read").toBe("read");
+    expect(build!.permissions?.["id-token"]).toBeUndefined();
+    expect(verify!.permissions?.contents ?? "read").toBe("read");
+    expect(publish!.permissions?.contents).toBe("write");
+    expect(publish!.permissions?.["id-token"]).toBe("write");
+    expect(runs(build!)).not.toContain("publish-release.sh");
+    expect(uses(build!, "actions/attest-build-provenance")).toBe(false);
+  });
+});
