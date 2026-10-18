@@ -131,6 +131,7 @@ bun run check
 - main の自動 rc の run は、tag を決めた後で main が進んでいれば何も公開しない。緑のまま終わるので、理由が run summary に `::notice::` として出る
 - Actions の `workflow_dispatch` は、既に push 済みの tag を release し直すためのもの。新しい tag は切れない。上の版番号の制限も通り、その release が既にあれば再実行としてそのまま通る
 - 公開済みの release は上書きしない。同じ tag の再実行で `SHA256SUMS` が同じなら何もせず成功、違えば落ちる。draft のまま、または資産が欠けている release は成功と見なさない
-- tag は release の前に API で先に作る。作れなかったのは同名の tag が既にあり、その tag が別の commit を指すときで、その場合は release を作らず止まる (tag を消して送り直すか、次の tag を切る)。同じ commit を指す tag (落ちた run の再実行) なら、そのまま release を作る
+- tag は release の前に API で先に作る。作れなかった同名の tag が別の commit を指すときは release を作らず止まる (tag を消して送り直すか、次の tag を切る)。同じ commit を指す tag (落ちた run の再実行) なら、そのまま release を作る。それ以外の失敗 (権限や、「既にある」以外の 422) は tag が誰のものかを読み直さず、この call の失敗として止めて理由をそのまま出す
+- この run が作った tag は、release を作れなかったら消す。release の無い tag は次の rc の版番号を押し上げるので。前からある tag は消さない
 - バイナリは 4 つとも形と埋め込んだ tag を検査してから、release する
 - バイナリの `--version` は release の tag と同じ (`v` を除く)

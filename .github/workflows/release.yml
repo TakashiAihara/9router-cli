@@ -179,7 +179,8 @@ jobs:
         with:
           subject-path: "dist/9router-cli-*"
 
-      # tag は publish-release.sh が API で先に作るので、この step には contents: write が要る。
+      # publish-release.sh は tag を API で先に作ってから release を作る。contents: write は tag を
+      # 作るためだけでなく、release そのものにも要る。
       # この token で作った tag は workflow を起動しないので、上の tag push の trigger で
       # 二重に release されない。
       - name: release
