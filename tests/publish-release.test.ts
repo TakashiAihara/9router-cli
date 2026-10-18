@@ -41,14 +41,18 @@ if [ "$1" = api ]; then
     *"--method DELETE"*git/refs/tags/*) exit 0 ;;
     *git/ref/tags/*)
       if [ -n "\${REF_READ_ERROR:-}" ]; then echo "\${REF_READ_ERROR}" >&2; exit 1; fi
-      echo "\${REF_TYPE:-commit} \${REF_EXISTING:-}" ;;
-    *git/tags/*) echo "\${TAG_TARGET:-}" ;;
+      echo "\${REF_TYPE:-commit} \${REF_NOW:-\${REF_EXISTING:-}}" ;;
+    *git/tags/*)
+      if [ -n "\${TAG_READ_ERROR:-}" ]; then echo "\${TAG_READ_ERROR}" >&2; exit 1; fi
+      echo "\${TAG_TARGET:-}" ;;
     *) exit 98 ;;
   esac
   exit 0
 fi
 case "$1 $2" in
-  "release create") exit "\${CREATE:-0}" ;;
+  "release create")
+    if [ -n "\${CREATE_SLEEP:-}" ]; then sleep "\${CREATE_SLEEP}"; fi
+    exit "\${CREATE:-0}" ;;
   "release view")
     case "$*" in
       *isDraft*) echo "\${IS_DRAFT:-false}" ;;
@@ -86,7 +90,6 @@ function publish(env: Record<string, string | undefined> = {}) {
       TAG,
       MAIN_SHA: head(),
       RELEASE_TRIGGER: "push",
-
       PUBLISHED_SUMS: published,
       PUBLISHED_BINARIES: "9router-cli-linux-x64",
       ...env,
@@ -108,6 +111,7 @@ describe("publish-release.sh", () => {
     expect(r.exitCode).toBe(0);
     expect(head()).toMatch(/^[0-9a-f]{40}$/);
     expect(ghCalls()).toContain(`release create v0.1.1-rc.2 --target ${head()} --latest=true `);
+    expect(ghCalls()).not.toContain("--method DELETE");
   });
 
   test("main の先頭でない commit の release は Latest にしない", () => {
@@ -548,11 +552,80 @@ describe("publish-release.sh: tag を先に作って競合を塞ぐ (#14)", () =
     expect(ghCalls()).not.toContain("release create");
   });
 
-  test("自分で作った tag は、release を作れなかったら消す", () => {
-    const r = publish({ VIEW: "1", CREATE: "1" });
+  test("自分で作った tag は、release を作れず release も無いなら消す", () => {
+    const r = publish({ VIEW: "1", CREATE: "1", REF_NOW: head() });
 
     expect(r.exitCode).toBe(1);
     expect(ghCalls()).toContain(`api --method DELETE repos/{owner}/{repo}/git/refs/tags/${TAG}`);
+  });
+
+  test("release を作れなくても、release が残っているなら tag は消さない (release を切り離さない)", () => {
+    const r = publish({ CREATE: "1", REF_NOW: head() });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).toContain("release create");
+    expect(ghCalls()).not.toContain("--method DELETE");
+  });
+
+  test("release の有無が分からないなら tag は消さない", () => {
+    const r = publish({ CREATE: "1", REF_NOW: head(), VIEW_ERROR: "HTTP 502: Bad Gateway" });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).toContain("release create");
+    expect(ghCalls()).not.toContain("--method DELETE");
+  });
+
+  test("消す直前に tag が別の commit へ動いていたら消さない", () => {
+    const r = publish({
+      VIEW: "1",
+      CREATE: "1",
+      REF_NOW: "0123456789abcdef0123456789abcdef01234567",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).not.toContain("--method DELETE");
+  });
+
+  test("upload の途中で cancel (TERM) されても、自分で作った tag を片付ける", async () => {
+    const published = join(sb.dir, "published");
+    const proc = Bun.spawn(["/bin/sh", SCRIPT], {
+      cwd: sb.dir,
+      env: {
+        PATH: `${join(sb.dir, "bin")}:${process.env.PATH}`,
+        HOME: sb.home,
+        TAG,
+        MAIN_SHA: head(),
+        RELEASE_TRIGGER: "push",
+        PUBLISHED_SUMS: published,
+        PUBLISHED_BINARIES: "9router-cli-linux-x64",
+        VIEW: "1",
+        CREATE_SLEEP: "5",
+        REF_NOW: head(),
+      },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    for (let i = 0; i < 150 && !(existsSync(calls) && ghCalls().includes("release create")); i++)
+      await Bun.sleep(20);
+    expect(ghCalls()).toContain("release create");
+
+    process.kill(proc.pid, "SIGTERM");
+
+    expect(await proc.exited).not.toBe(0);
+    expect(ghCalls()).toContain(`api --method DELETE repos/{owner}/{repo}/git/refs/tags/${TAG}`);
+  }, 15_000);
+
+  test("注釈付き tag の object を読めなければ止めて理由を出す", () => {
+    const r = publish({
+      VIEW: "1",
+      REF_EXISTING: "fedcba9876543210fedcba9876543210fedcba98",
+      REF_TYPE: "tag",
+      TAG_READ_ERROR: "HTTP 500: Internal Server Error",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("HTTP 500: Internal Server Error");
+    expect(ghCalls()).not.toContain("release create");
   });
 
   test("前からあった tag は、release を作れなくても消さない", () => {
