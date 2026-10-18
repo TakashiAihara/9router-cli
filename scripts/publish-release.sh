@@ -122,8 +122,8 @@ refuse_higher_than_existing() {
   }
   # Both greps exit 1 on an empty result: no published release carries a tag of this shape, or
   # nothing is left once $TAG itself is taken out. Either way there is no partner to compare
-  # against, so nothing is refused. $TAG goes last because its own release was just found to be
-  # absent; comparing a tag with itself says nothing about the versions it could outrank.
+  # against, so nothing is refused. $TAG is taken out only for the moment between the view above
+  # and this list, where its release could appear; a tag compared with itself outranks nothing.
   existing="$(printf '%s\n' "$listed" | grep -E "$version_shape" | grep -Fxv -- "$TAG")" || existing=""
   highest=""
   for other in $existing; do
@@ -154,8 +154,9 @@ if [ "$head" != "$MAIN_SHA" ]; then
     exit 0
   fi
   # A dispatch re-runs a tag that was pushed before, which the check lets through for as long as
-  # that release exists. It is also how a refused tag gets released later, so it is not a way in
-  # around the check: nothing gets published by being dispatched a second time.
+  # that release exists (a draft also passes here, and the draft check below stops it). It is also
+  # how a refused tag gets released later, so it is not a way around the check: nothing gets
+  # published by being dispatched a second time.
   refuse_higher_than_existing
 fi
 

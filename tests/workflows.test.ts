@@ -170,7 +170,7 @@ describe("release.yml の build job", () => {
   });
 });
 
-// publish-release.sh は `:?` の後で tag の形を严格要求する (0 始まりと 9 桁を超える数を受け付け
+// publish-release.sh は `:?` の後で tag の形を厳格に要求する (0 始まりと 9 桁を超える数を受け付け
 // ない)。workflow 側が緩い形だと、checkout と build を全部走らせてから script で落とすことになる
 describe("release.yml の tag の形", () => {
   test("check the requested tag が publish-release.sh と同じ形で見る", () => {

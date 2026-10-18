@@ -380,10 +380,11 @@ describe("publish-release.sh: 版番号の並びと経路 (#15 の 2 周目)", (
 
     const r = old({
       TAG: "v0.11.0",
-      PUBLISHED_TAGS: "v0.1.0\nv0.2.0\nv0.9.0\nv0.10.0-rc.1",
+      PUBLISHED_TAGS: "v0.1.0\nv0.2.0\nv0.10.0-rc.1\nv0.9.0",
     });
 
     expect(r.exitCode).toBe(1);
+    expect(ghCalls()).toContain("release list --exclude-drafts --limit 1000 ");
     expect(r.stderr.toString()).toContain("v0.10.0-rc.1");
     expect(r.stderr.toString()).not.toContain("v1.0.0");
     expect(ghCalls()).not.toContain("release create");
