@@ -12,10 +12,22 @@
 # the same bytes and the same sums. Equal sums therefore mean nothing but "the same four
 # files, unchanged", which is what "already published" has to mean; unequal sums mean
 # different bytes, and those are never replaced.
+#
+# Why $RELEASE_TRIGGER is needed: the three paths that reach this script disagree on what a tag
+# on a commit that is not main's head means. A hand-pushed tag is a person choosing a version and
+# is refused when it outranks what is already released; an automatic rc belongs to a commit main
+# has since moved past; a dispatch only re-runs a tag that was pushed before.
 set -eu
 
 : "${TAG:?TAG is required}"
 : "${MAIN_SHA:?MAIN_SHA is required}"
+: "${RELEASE_TRIGGER:?RELEASE_TRIGGER is required}"
+
+# Release tags are vX.Y.Z or vX.Y.Z-rc.N, with no leading zeros and no number wider than this.
+# The versions below are compared as numbers, and "v0.011.0" would compare as 0.11.0 while a
+# twenty digit patch is not a number `[` can compare at all, so neither shape means the version
+# its name writes down. A tag of any other shape is not released, and never compared.
+version_shape='^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-rc\.(0|[1-9][0-9]{0,8}))?$'
 
 head="$(git rev-parse --verify HEAD)"
 
@@ -29,6 +41,11 @@ if tagged="$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" 2>/dev/null)"
     echo "not publishing them under it" >&2
     exit 1
   fi
+fi
+
+if ! printf '%s\n' "$TAG" | grep -E "$version_shape" >/dev/null; then
+  echo "tag ${TAG} is not vX.Y.Z or vX.Y.Z-rc.N, so it names no version to release" >&2
+  exit 1
 fi
 
 # Puts a version number into the fields version_gt compares: major, minor, patch, then a rank
@@ -48,8 +65,8 @@ version_key() {
   printf '%s %s %s %s %s' "${base%%.*}" "${numbers%%.*}" "${numbers#*.}" "$rank" "$rc"
 }
 
-# Whether $1 is a higher semver than $2. Stops at the first field that differs, so that a bigger
-# rc count cannot win over a smaller patch number.
+# Whether $1 is a higher semver than $2. Stops at the first field that differs, so that
+# v0.2.0-rc.9 does not outrank v0.2.1-rc.1 because its rc count is the bigger number.
 version_gt() {
   left="$(version_key "$1")"
   right="$(version_key "$2")"
@@ -66,29 +83,67 @@ version_gt() {
   return 1
 }
 
-# install.sh は Latest を配るので、main の先頭でない commit の release を Latest にしない
-if [ "$head" = "$MAIN_SHA" ]; then latest=true; else latest=false; fi
-
+# Stops when a tag with no release yet would rank above the tags that do have one.
+#
+# gh reports a tag it has no release for as "release not found" and every other failure (network,
+# auth, a broken API) in its own words. Reading all of them as "does not exist" would let a
+# version that nobody can see reach the comparison below and outrank what is already out, so only
+# that one line counts as missing and the rest stops the run with what gh said.
+#
 # --latest=false keeps main out of GitHub's latest, but the number still reads as the newest
 # version to whoever picks a release by the highest tag, and keeps reading that way until main
-# ships something higher. Only for a release that does not exist yet: an already published tag
-# is a fact from before this commit ran, and a version below the highest existing tag is a
-# backport, which is what the number is there to say.
-if [ "$head" != "$MAIN_SHA" ] && ! gh release view "$TAG" >/dev/null 2>&1; then
+# ships something higher. That is what a backport is for: older code under a version below the
+# highest existing tag still says which code it carries, so it goes out.
+refuse_higher_than_existing() {
+  if view_err="$(gh release view "$TAG" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  case "$view_err" in
+    *"release not found"*) ;;
+    *)
+      echo "could not read release ${TAG}:" >&2
+      echo "$view_err" >&2
+      exit 1
+      ;;
+  esac
+
   tags="$(git tag --list 'v*')"
-  # grep は一致 0 件で 1 を返す。それだけを空として受けて、tag のない最初の release も通す。
-  # git が失敗した時は上の代入で止まるので、比較の相手不在を空と読ませない。
-  # 手で push された tag は既に checkout に入っている。自分自身を比べる相手から外さないと
-  # 「最も高いのは自分自身」で止まらないので、誰も負けていない版も毎回通ってしまう
-  existing="$(printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' | grep -Fxv -- "$TAG")" || existing=""
+  # Both greps exit 1 on an empty result: no tag of the release shape at all, or nothing left
+  # once $TAG itself is taken out. Either way there is no partner to compare against, and a tag
+  # that is the only version number in the checkout says nothing about anyone else's. A git that
+  # fails to list them is not one of those: it stops at the assignment above.
+  existing="$(printf '%s\n' "$tags" | grep -E "$version_shape" | grep -Fxv -- "$TAG")" || existing=""
   highest=""
   for other in $existing; do
     if [ -z "$highest" ] || version_gt "$other" "$highest"; then highest="$other"; fi
   done
+
   if [ -n "$highest" ] && version_gt "$TAG" "$highest"; then
     echo "tag ${TAG} is higher than ${highest}, the highest tag in this checkout;" >&2
     echo "not publishing it from ${head}, which is not main's head" >&2
+    echo "the pushed tag stays where it is, so the next runs see it too; delete it before" >&2
+    echo "cutting another one: git push origin :refs/tags/${TAG}" >&2
     exit 1
+  fi
+}
+
+# install.sh は Latest を配るので、main の先頭でない commit の release を Latest にしない
+if [ "$head" = "$MAIN_SHA" ]; then latest=true; else latest=false; fi
+
+# On main's head the three paths do the same thing, so this is the only place they can differ.
+if [ "$head" != "$MAIN_SHA" ]; then
+  # This run's rc tag was decided while $head was main's head, and main moved on before the
+  # release step got here. The run for the newer commit decides its own tag, so publishing this
+  # one would only put older code under a version number that reads as the newest. The tag job
+  # checks this too, but it ran before the build.
+  if [ "$RELEASE_TRIGGER" = workflow_run ]; then
+    echo "::notice::main has moved on since ${TAG} was decided; this run releases nothing"
+    exit 0
+  fi
+  # A dispatch only re-runs a tag that was pushed before, so its version is a fact already, not a
+  # new claim about which code is newest.
+  if [ "$RELEASE_TRIGGER" != workflow_dispatch ]; then
+    refuse_higher_than_existing
   fi
 fi
 

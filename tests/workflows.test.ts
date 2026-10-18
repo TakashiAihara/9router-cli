@@ -9,7 +9,7 @@ const read = (file: string) => readFileSync(join(dir, file), "utf8");
 const release = () =>
   Bun.YAML.parse(read("release.yml")) as {
     concurrency: { group: string; "cancel-in-progress": boolean };
-    jobs: { build: { steps: { name: string; run?: string }[] } };
+    jobs: { build: { steps: { name: string; run?: string; env?: Record<string, string> }[] } };
   };
 const releaseStep = () =>
   release().jobs.build.steps.find((step) => step.name === "release")?.run ?? "";
@@ -152,5 +152,14 @@ describe("release.yml の build job", () => {
     expect(run).toContain("+refs/tags/*:refs/tags/*");
     expect(run).toContain("+refs/heads/main:refs/remotes/origin/main");
     expect(run.indexOf("+refs/tags/*")).toBeLessThan(run.indexOf("sh scripts/publish-release.sh"));
+  });
+
+  // push / workflow_run / workflow_dispatch で「main の先頭でない commit の tag」の扱い方が
+  // 変わる。スクリプトは event 名以外から経路を知れないので、この env が抜けたら全部同じ
+  // 経路になり、自動 rc が古い commit を版の大きい tag で公開してしまう
+  test("publish-release.sh に event 名を渡す", () => {
+    const env = release().jobs.build.steps.find((step) => step.name === "release")?.env ?? {};
+
+    expect(env.RELEASE_TRIGGER).toBe("${{ github.event_name }}");
   });
 });
