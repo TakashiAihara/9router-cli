@@ -44,9 +44,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # action は tag ではなく commit で固定する (版は行末コメント)。build job は
-  # contents:write を持ち provenance に署名するので、動かされた tag の下で差し替えられた
-  # action は「自分たちが作った」ものとして attest されてしまう。
+  # action は tag ではなく commit で固定する (版は行末コメント)。build も publish も動かされた
+  # tag の下で動くので、差し替えられた action は「検査した」「作った」ものとして通ってしまう。
+  # publish は provenance に署名するので、その差替えも署名されて出て行く
   tag:
     # workflow_run は main という名前の branch の CI すべてで起きる。fork の PR の main
     # も含むので、この repo の main への push だけを release にする。
@@ -61,6 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.decide.outputs.tag }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       # 入力を checkout の ref に使う前に見る。branch 名を渡されて、その branch の中身が
       # tag の名前で release されるのを防ぐ。形は publish-release.sh が比べる形と同じで、数を
@@ -79,9 +80,19 @@ jobs:
           # 次の tag を数えるための全 tag と、main が進んだかを見るための origin/main
           fetch-depth: 0
           persist-credentials: false
+
+      # 後の job は全部この commit を使う。tag がこの後で動くと、検査も公開もしていない
+      # commit を出すことになるので、使う commit はここで決めてから渡す
+      - name: read the checked commit
+        id: commit
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       # setup-bun は .mise.toml を読めない (.tool-versions と package.json と .bun-version
       # だけ) ので、CI と同じ mise で bun の版を .mise.toml 1 か所に保つ。cache を切るのは、
-      # 署名権限を持つ job に書き込み可能な cache を持ち込まないため。
+      # 他の run (PR など) が書いた cache を、署名して出すバイナリの build に読ませないため。
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
           cache: false
@@ -136,22 +147,19 @@ jobs:
   build:
     needs: tag
     if: needs.tag.outputs.tag != ''
+    # 書き込み権限と署名権限を持たない。tag や release を作れるのは publish job だけで、
+    # 動かされた tag の下で build が tag を切る余地を残さない。
     permissions:
-      contents: write
-      # checksum は同じ release の中にあるので真正性の証明にならない。どの workflow が
-      # どの commit から作ったかを検証できるよう provenance を付ける。
-      id-token: write
-      attestations: write
+      contents: read
     runs-on: ubuntu-latest
     env:
       TAG: ${{ needs.tag.outputs.tag }}
     steps:
-      # 手動実行では inputs.tag と default branch の HEAD が食い違う。ref を明示しないと
-      # tag と中身が違うバイナリが release に載り、後から見分けられない。tag が無ければ
-      # ここで落ちる。
+      # tag job が検査した commit をそのまま build する。tag がその後に動いても、検査していない
+      # commit のバイナリを作らない
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || (github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag)) || github.ref }}
+          ref: ${{ needs.tag.outputs.sha }}
           persist-credentials: false
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
@@ -172,8 +180,109 @@ jobs:
       # この runner で動くのは linux-x64 だけ。--version は埋め込みが効いたかの検査で、
       # tag と違う版を名乗るバイナリは配らない。残り 3 つはここからは動かせないので、
       # check-binaries.sh が file(1) で形と埋め込みを見てから、この 1 個を走らせる。
+      # 残り 3 個を動かせるのは verify job の runner だけなので、実行はそちらに任せる
       - name: check the built binaries
         run: sh scripts/check-binaries.sh
+
+      # 公開する物はここで上げる archive だけ。publish も verify もそれを落とすだけなので、
+      # 検査したものと公開するものは同じ物になる。artifact が無ければ落とす側が止まるので、
+      # 空の dist を配す経路は無い。if-no-files-found は一部だけ上がった場合を見ないため、
+      # 4 個揃っていることは check-binaries.sh に任せる
+      - name: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-binaries
+          # 読むのは同じ run の verify と publish だけなので、短い方を選ぶ
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist/9router-cli-*
+            dist/SHA256SUMS
+
+  verify:
+    needs: [tag, build]
+    if: needs.tag.outputs.tag != ''
+    permissions:
+      contents: read
+    # 1 つが失敗しても残りを止めず、4 つとも結果を run に残す (publish はどれか 1 つの失敗で止まる)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-15
+    # 止まったバイナリが次の main の release を待たせないように、1 つのバイナリが動き続ける
+    # 時間の上限を設ける
+    timeout-minutes: 15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # 走らせる script も build と同じ commit から取る。使うのは script 1 本だけで、bun も
+      # mise も要らない
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-binaries
+          path: dist
+
+      - name: check the sum and run the binary
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          # 落とした物を build の SHA256SUMS と突き合わせる。使える道具 (sha256sum / shasum) で
+          # どの runner でも同じ照合になるようにする
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum -c SHA256SUMS)
+          else
+            (cd dist && shasum -a 256 -c SHA256SUMS)
+          fi
+          sh scripts/run-binary.sh "dist/9router-cli-$TARGET" "$TAG"
+
+  # verify が 4 つとも走らせた形だけを公開する。needs の job が 1 つでも落ちた (または
+  # skip された) run では何も公開しない
+  publish:
+    needs: [tag, build, verify]
+    if: needs.tag.outputs.tag != ''
+    permissions:
+      contents: write
+      # checksum は同じ release の中にあるので真正性の証明にならない。どの workflow が
+      # どの commit から作ったかを検証できるよう provenance を付ける。
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      # release の中身と落とした dist/ を同じ commit から取る。別の commit の script で
+      # 出すと、公開する物と作った物が別の物になる
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
+          persist-credentials: false
+
+      # build が上げたものをそのまま落とす。attest の対象も release に載るのも、この dist/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-binaries
+          path: dist
+
+      # 4 個とも build が出した sums に合うことを確かめてから署名する。署名も release に載る
+      # のもこの dist/ なので、公開する物と署名する物を別にしない
+      - name: check the sums
+        working-directory: dist
+        run: |
+          set -eux
+          sha256sum -c SHA256SUMS
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

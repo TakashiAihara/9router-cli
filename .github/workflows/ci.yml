@@ -17,8 +17,8 @@ jobs:
         with:
           persist-credentials: false
       # install.sh は sh に流し込まれるファイルなので、間違えたときの代償が最も大きい
-      - name: shellcheck (install.sh, publish-release.sh, check-binaries.sh)
-        run: shellcheck install.sh scripts/publish-release.sh scripts/check-binaries.sh
+      - name: shellcheck (install.sh, publish-release.sh, check-binaries.sh, run-binary.sh)
+        run: shellcheck install.sh scripts/publish-release.sh scripts/check-binaries.sh scripts/run-binary.sh
       - uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # v1.7.12
         with:
           args: -color

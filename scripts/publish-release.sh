@@ -8,10 +8,10 @@
 # Why equal sums mean the same release: SHA256SUMS covers all four binaries by name, so the
 # sums change when any of them changes, is missing, or is swapped for another target's file.
 # The build is a plain `bun build --compile` of one entry point with one --define (the tag)
-# and one --outfile per target, all from the same checkout, so the same commit and tag give
-# the same bytes and the same sums. Equal sums therefore mean nothing but "the same four
-# files, unchanged", which is what "already published" has to mean; unequal sums mean
-# different bytes, and those are never replaced.
+# and one --outfile per target, all from the one commit this run checked and built, so that
+# commit and tag give the same bytes and the same sums. Equal sums therefore mean nothing but
+# "the same four files, unchanged", which is what "already published" has to mean; unequal
+# sums mean different bytes, and those are never replaced.
 #
 # Why $RELEASE_TRIGGER is needed: the three paths that reach this script do not agree on a tag
 # from a commit that is not main's head. An automatic rc belongs to a commit main has since moved
@@ -41,7 +41,7 @@ head="$(git rev-parse --verify HEAD)"
 # API, which is the only one that sees a name pushed after this point.
 if tagged="$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" 2>/dev/null)"; then
   if [ "$tagged" != "$head" ]; then
-    echo "tag ${TAG} already points at ${tagged}, but these binaries are built from ${head};" >&2
+    echo "tag ${TAG} already points at ${tagged}, but these binaries were built from ${head}, the commit this run checked;" >&2
     echo "not publishing them under it" >&2
     exit 1
   fi
@@ -191,7 +191,7 @@ tag_is_head() {
   fi
 
   if [ "$tagged" != "$head" ]; then
-    echo "tag ${TAG} now points at ${tagged}, but these binaries are built from ${head};" >&2
+    echo "tag ${TAG} now points at ${tagged}, but these binaries were built from ${head}, the commit this run checked;" >&2
     echo "not publishing them under it" >&2
     exit 1
   fi
