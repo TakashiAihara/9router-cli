@@ -36,8 +36,12 @@ if [ "$1" = api ]; then
     *"--method POST"*git/refs*)
       if [ -n "\${REF_CREATE_ERROR:-}" ]; then echo "\${REF_CREATE_ERROR}" >&2; exit 1; fi
       if [ -n "\${REF_EXISTING:-}" ]; then echo "gh: Reference already exists (HTTP 422)" >&2; exit 1; fi
+      if [ -n "\${REF_422_OTHER:-}" ]; then echo "gh: \${REF_422_OTHER} (HTTP 422)" >&2; exit 1; fi
       exit 0 ;;
-    *git/ref/tags/*) echo "\${REF_TYPE:-commit} \${REF_EXISTING:-}" ;;
+    *"--method DELETE"*git/refs/tags/*) exit 0 ;;
+    *git/ref/tags/*)
+      if [ -n "\${REF_READ_ERROR:-}" ]; then echo "\${REF_READ_ERROR}" >&2; exit 1; fi
+      echo "\${REF_TYPE:-commit} \${REF_EXISTING:-}" ;;
     *git/tags/*) echo "\${TAG_TARGET:-}" ;;
     *) exit 98 ;;
   esac
@@ -82,7 +86,7 @@ function publish(env: Record<string, string | undefined> = {}) {
       TAG,
       MAIN_SHA: head(),
       RELEASE_TRIGGER: "push",
-      GITHUB_REPOSITORY: "o/r",
+
       PUBLISHED_SUMS: published,
       PUBLISHED_BINARIES: "9router-cli-linux-x64",
       ...env,
@@ -359,6 +363,7 @@ describe("publish-release.sh: 版番号の並びと経路 (#15 の 2 周目)", (
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toContain("::notice::");
     expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("git/refs");
   });
 
   test("workflow_dispatch でも、release の無い高い版番号は止める (push で拒否されたタグの抜け道を塞ぐ)", () => {
@@ -461,7 +466,7 @@ describe("publish-release.sh: tag を先に作って競合を塞ぐ (#14)", () =
     expect(r.exitCode).toBe(0);
     const calls = ghCalls();
     expect(calls).toContain(
-      `api --method POST repos/o/r/git/refs -f ref=refs/tags/${TAG} -f sha=${head()}`,
+      `api --method POST repos/{owner}/{repo}/git/refs -f ref=refs/tags/${TAG} -f sha=${head()}`,
     );
     expect(calls).toMatch(new RegExp(`release create ${TAG} .*--verify-tag`));
     expect(calls.indexOf("git/refs")).toBeLessThan(calls.indexOf("release create"));
@@ -516,13 +521,45 @@ describe("publish-release.sh: tag を先に作って競合を塞ぐ (#14)", () =
     expect(ghCalls()).not.toContain("release create");
   });
 
-  test("GITHUB_REPOSITORY が無ければ何も作らずに止まる", () => {
-    const r = publish({ VIEW: "1", GITHUB_REPOSITORY: undefined });
+  test("既存の tag は名前どおりの ref を読み、注釈付きはその tag object を読む", () => {
+    const tagObject = "fedcba9876543210fedcba9876543210fedcba98";
 
-    expect(r.exitCode).not.toBe(0);
-    expect(r.stderr.toString()).toContain("GITHUB_REPOSITORY");
-    expect(existsSync(calls) ? ghCalls() : "").not.toContain("git/refs");
-    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+    publish({ VIEW: "1", REF_EXISTING: tagObject, REF_TYPE: "tag", TAG_TARGET: head() });
+
+    const calls = ghCalls();
+    expect(calls).toContain(`api repos/{owner}/{repo}/git/ref/tags/${TAG} `);
+    expect(calls).toContain(`api repos/{owner}/{repo}/git/tags/${tagObject} `);
+  });
+
+  test("既存の tag を読めなければ止めて理由を出す", () => {
+    const r = publish({ VIEW: "1", REF_EXISTING: head(), REF_READ_ERROR: "HTTP 502: Bad Gateway" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("HTTP 502: Bad Gateway");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("「既にある」以外の 422 は既存の tag と読まずに止める", () => {
+    const r = publish({ VIEW: "1", REF_422_OTHER: "Repository rule violations found" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("Repository rule violations found");
+    expect(ghCalls()).not.toContain("git/ref/tags/");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("自分で作った tag は、release を作れなかったら消す", () => {
+    const r = publish({ VIEW: "1", CREATE: "1" });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).toContain(`api --method DELETE repos/{owner}/{repo}/git/refs/tags/${TAG}`);
+  });
+
+  test("前からあった tag は、release を作れなくても消さない", () => {
+    const r = publish({ VIEW: "1", CREATE: "1", REF_EXISTING: head() });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).not.toContain("--method DELETE");
   });
 
   // 残った tag は次の run にも同名の tag として見え、次の tag をその上へ押し上げるので、
