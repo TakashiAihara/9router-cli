@@ -203,3 +203,51 @@ describe("publish-release.sh", () => {
     });
   });
 });
+
+describe("publish-release.sh: 古い commit の新しい版番号 (#15)", () => {
+  // old (HEAD) に v0.1.0、その先の main に v0.2.0-rc.3。HEAD は old に戻す
+  let oldSha: string;
+  let mainSha: string;
+  beforeEach(() => {
+    oldSha = head();
+    git("tag", "v0.1.0");
+    git("commit", "-q", "--allow-empty", "-m", "main");
+    mainSha = head();
+    git("tag", "v0.2.0-rc.3");
+    git("checkout", "-q", oldSha);
+  });
+
+  test("main より高い版番号の新しいタグは、古い commit からは公開しない", () => {
+    const r = publish({ TAG: "v0.2.0", MAIN_SHA: mainSha, VIEW: "1" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.2.0-rc.3");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+  });
+
+  test("既存の最大より低い版番号は古い commit からも公開し、Latest にしない", () => {
+    const r = publish({ TAG: "v0.0.9", MAIN_SHA: mainSha, VIEW: "1" });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`release create v0.0.9 --target ${oldSha} --latest=false `);
+  });
+
+  test("公開済みのタグの再実行は、古い commit でも止めない", () => {
+    git("tag", "v0.3.0");
+    published(BUILT);
+
+    const r = publish({ TAG: "v0.3.0", MAIN_SHA: mainSha, CREATE: "1" });
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.toString()).toContain("already published");
+  });
+
+  test("main の先頭への通常の正式版は Latest にする", () => {
+    git("checkout", "-q", mainSha);
+
+    const r = publish({ TAG: "v0.2.0", MAIN_SHA: mainSha, VIEW: "1" });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`release create v0.2.0 --target ${mainSha} --latest=true `);
+  });
+});
