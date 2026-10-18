@@ -152,10 +152,7 @@ api_repo='repos/{owner}/{repo}'
 tag_created=false
 released=false
 
-# Scratch files for one run. The error file is written separately because gh's stdout is parsed in
-# places, and a warning arriving on stderr would be read as part of the value it answered with.
-scratch="$(mktemp -d)"
-gh_err="${scratch}/gh-err"
+
 published=""
 
 # The commit an existing tag points at: the ref's own sha, or, for an annotated tag, the commit its
@@ -230,8 +227,9 @@ create_tag() {
   tag_is_head
 }
 
-# keep_tag / drop_tag_if_unreleased / cleanup は EXIT の trap の文字列からしか呼ばれず、shellcheck は
-# trap の文字列を読まないので、呼ばれない関数 (SC2329) と見なされる。3 つにだけ抑止を付ける
+# keep_tag, drop_tag_if_unreleased and cleanup are reached only through the EXIT trap's string,
+# which shellcheck does not read, so it takes them as never called (SC2329); only these three
+# carry the directive.
 # shellcheck disable=SC2329
 keep_tag() {
   echo "tag ${TAG} is kept: ${1}; to remove it: git push origin :refs/tags/${TAG}" >&2
@@ -282,24 +280,26 @@ drop_tag_if_unreleased() {
   echo "deleted tag ${TAG}, which this run made and did not release" >&2
 }
 
-# One exit path for the scratch files and the tag, because the ways this run can stop are not all
-# visible where they happen: a job cancelled while the assets upload looks exactly like a failure, and
-# a trap that only some exits reached would not see it. The signals go through exit so the handler
-# runs for those too. The tag goes first, since it is the only step whose result can be reasoned
-# about; scratch files are removed after, and the last word is returned so this cannot change the
-# status the script exits with.
+# One exit path for the scratch files and the tag, because an unexpected stop under set -e is not
+# visible where it happens. A cancelled job is not covered: the runner signals the step's shell, not
+# this script, and SIGKILL follows within seconds, so a cancel or a kill can leave a tag this run
+# made with no release (README says how to remove it). set +e keeps one failing step here from
+# skipping the rest, and the exit status is the script's own, since an EXIT handler does not change it.
 # shellcheck disable=SC2329
 cleanup() {
+  set +e
   drop_tag_if_unreleased
   rm -rf "$scratch"
   if [ -n "$published" ]; then rm -rf "$published"; fi
   return 0
 }
 
+# Scratch files for one run, made next to the trap that removes them. The error file is written
+# separately because gh's stdout is parsed in places, and a warning arriving on stderr would be read
+# as part of the value it answered with.
+scratch="$(mktemp -d)"
+gh_err="${scratch}/gh-err"
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
 
 # install.sh は Latest を配るので、main の先頭でない commit の release を Latest にしない
 if [ "$head" = "$MAIN_SHA" ]; then latest=true; else latest=false; fi

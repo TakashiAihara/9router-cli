@@ -132,6 +132,6 @@ bun run check
 - Actions の `workflow_dispatch` は、既に push 済みの tag を release し直すためのもの。新しい tag は切れない。上の版番号の制限も通り、その release が既にあれば再実行としてそのまま通る
 - 公開済みの release は上書きしない。同じ tag の再実行で `SHA256SUMS` が同じなら何もせず成功、違えば落ちる。draft のまま、または資産が欠けている release は成功と見なさない
 - tag は release の前に API で先に作る。作れなかった同名の tag が別の commit を指すときは release を作らず止まる (tag を消して送り直すか、次の tag を切る)。同じ commit を指す tag (落ちた run の再実行) なら、そのまま release を作る。それ以外の失敗 (権限や、「既にある」以外の 422) は tag が誰のものかを読み直さず、この call の失敗として止めて理由をそのまま出す
-- この run が作った tag は、release が 1 つも無いまま終わったら消す。release の無い tag は次の rc を数える時に数えられ、rc の番号を 1 つ飛ばすので。upload の途中で job を cancel した場合も同じように片付ける。release が存在する tag (draft や upload が途中まで進んだものも含む) と、前からあった tag は消さない
+- この run が作った tag は、release が 1 つも無いまま終わったら消す。release の無い tag は次の rc を数える時に数えられ、rc の番号を 1 つ飛ばすので。release が存在する tag (draft や upload が途中まで進んだものも含む) と、前からあった tag は消さない。job の cancel や強制終了では片付けが走らないので、tag を作った直後から release ができるまでの間に止まると、release の無い tag が残る。そのときは `git push origin :refs/tags/<tag>` で消す (残すと次の rc の番号が 1 つ飛ぶ)
 - バイナリは 4 つとも形と埋め込んだ tag を検査してから、release する
 - バイナリの `--version` は release の tag と同じ (`v` を除く)

@@ -50,9 +50,7 @@ if [ "$1" = api ]; then
   exit 0
 fi
 case "$1 $2" in
-  "release create")
-    if [ -n "\${CREATE_SLEEP:-}" ]; then sleep "\${CREATE_SLEEP}"; fi
-    exit "\${CREATE:-0}" ;;
+  "release create") exit "\${CREATE:-0}" ;;
   "release view")
     case "$*" in
       *isDraft*) echo "\${IS_DRAFT:-false}" ;;
@@ -594,35 +592,6 @@ describe("publish-release.sh: tag を先に作って競合を塞ぐ (#14)", () =
     expect(r.exitCode).toBe(1);
     expect(ghCalls()).not.toContain("--method DELETE");
   });
-
-  test("upload の途中で cancel (TERM) されても、自分で作った tag を片付ける", async () => {
-    const published = join(sb.dir, "published");
-    const proc = Bun.spawn(["/bin/sh", SCRIPT], {
-      cwd: sb.dir,
-      env: {
-        PATH: `${join(sb.dir, "bin")}:${process.env.PATH}`,
-        HOME: sb.home,
-        TAG,
-        MAIN_SHA: head(),
-        RELEASE_TRIGGER: "push",
-        PUBLISHED_SUMS: published,
-        PUBLISHED_BINARIES: "9router-cli-linux-x64",
-        VIEW: "1",
-        CREATE_SLEEP: "5",
-        REF_NOW: head(),
-      },
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    for (let i = 0; i < 150 && !(existsSync(calls) && ghCalls().includes("release create")); i++)
-      await Bun.sleep(20);
-    expect(ghCalls()).toContain("release create");
-
-    process.kill(proc.pid, "SIGTERM");
-
-    expect(await proc.exited).not.toBe(0);
-    expect(ghCalls()).toContain(`api --method DELETE repos/{owner}/{repo}/git/refs/tags/${TAG}`);
-  }, 15_000);
 
   test("注釈付き tag の object を読めなければ止めて理由を出す", () => {
     const r = publish({
