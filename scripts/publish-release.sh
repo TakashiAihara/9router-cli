@@ -227,9 +227,9 @@ create_tag() {
 }
 
 # keep_tag, drop_tag_if_unreleased and cleanup are reached only through the EXIT trap's string,
-# which shellcheck does not read, so it takes them as never called (SC2329); only these three
-# carry the directive.
-# shellcheck disable=SC2329
+# which shellcheck does not read, so it takes them as never called (SC2329, or SC2317 in older
+# releases); only these three carry the directive.
+# shellcheck disable=SC2317,SC2329
 keep_tag() {
   echo "tag ${TAG} is kept: ${1}; to remove it: git push origin :refs/tags/${TAG}" >&2
 }
@@ -241,7 +241,7 @@ keep_tag() {
 # install from, and a tag that has been moved since this run made it is not this run's to delete.
 # Anything this cannot settle also keeps the tag, because deleting on a guess is what this is here to
 # prevent.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 drop_tag_if_unreleased() {
   if [ "$tag_created" != true ] || [ "$released" = true ]; then
     return 0
@@ -285,7 +285,7 @@ drop_tag_if_unreleased() {
 # or a kill can therefore leave a tag this run made with no release (README says how to remove it).
 # set +e keeps one failing step here from skipping the rest, and with nothing here calling exit the
 # script keeps the exit status it already had.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   set +e
   drop_tag_if_unreleased
