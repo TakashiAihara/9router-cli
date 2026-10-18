@@ -168,6 +168,18 @@ describe("release.yml の build job", () => {
 
     expect(env.RELEASE_TRIGGER).toBe("${{ github.event_name }}");
   });
+
+  // publish-release.sh は tag を API で ref として作るので、この job に書き込み権限が無いと
+  // tag が作れず、すべての release が止まる
+  test("release step の job が ref を作れる contents: write を持つ", () => {
+    const build = (
+      Bun.YAML.parse(read("release.yml")) as {
+        jobs: { build: { permissions?: Record<string, string> } };
+      }
+    ).jobs.build;
+
+    expect(build.permissions?.contents).toBe("write");
+  });
 });
 
 // publish-release.sh は `:?` の後で tag の形を厳格に要求する (0 始まりと 9 桁を超える数を受け付け

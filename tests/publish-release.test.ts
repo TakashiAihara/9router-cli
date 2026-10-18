@@ -31,6 +31,24 @@ beforeEach(() => {
     gh,
     `#!/bin/sh
 echo "$*" >> "${calls}"
+if [ "$1" = api ]; then
+  case "$*" in
+    *"--method POST"*git/refs*)
+      if [ -n "\${REF_CREATE_ERROR:-}" ]; then echo "\${REF_CREATE_ERROR}" >&2; exit 1; fi
+      if [ -n "\${REF_EXISTING:-}" ]; then echo "gh: Reference already exists (HTTP 422)" >&2; exit 1; fi
+      if [ -n "\${REF_422_OTHER:-}" ]; then echo "gh: \${REF_422_OTHER} (HTTP 422)" >&2; exit 1; fi
+      exit 0 ;;
+    *"--method DELETE"*git/refs/tags/*) exit 0 ;;
+    *git/ref/tags/*)
+      if [ -n "\${REF_READ_ERROR:-}" ]; then echo "\${REF_READ_ERROR}" >&2; exit 1; fi
+      echo "\${REF_TYPE:-commit} \${REF_NOW:-\${REF_EXISTING:-}}" ;;
+    *git/tags/*)
+      if [ -n "\${TAG_READ_ERROR:-}" ]; then echo "\${TAG_READ_ERROR}" >&2; exit 1; fi
+      echo "\${TAG_TARGET:-}" ;;
+    *) exit 98 ;;
+  esac
+  exit 0
+fi
 case "$1 $2" in
   "release create") exit "\${CREATE:-0}" ;;
   "release view")
@@ -91,6 +109,7 @@ describe("publish-release.sh", () => {
     expect(r.exitCode).toBe(0);
     expect(head()).toMatch(/^[0-9a-f]{40}$/);
     expect(ghCalls()).toContain(`release create v0.1.1-rc.2 --target ${head()} --latest=true `);
+    expect(ghCalls()).not.toContain("--method DELETE");
   });
 
   test("main の先頭でない commit の release は Latest にしない", () => {
@@ -346,6 +365,7 @@ describe("publish-release.sh: 版番号の並びと経路 (#15 の 2 周目)", (
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toContain("::notice::");
     expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("git/refs");
   });
 
   test("workflow_dispatch でも、release の無い高い版番号は止める (push で拒否されたタグの抜け道を塞ぐ)", () => {
@@ -436,5 +456,177 @@ describe("publish-release.sh: 版番号の並びと経路 (#15 の 2 周目)", (
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain("v0.10.0-rc.1");
     expect(r.stderr.toString()).not.toContain("v0.011.0");
+  });
+});
+
+describe("publish-release.sh: tag を先に作って競合を塞ぐ (#14)", () => {
+  const other = "0123456789abcdef0123456789abcdef01234567";
+
+  test("tag は API で build した commit に先に作り、release は既存の tag にだけ付ける", () => {
+    const r = publish({ VIEW: "1" });
+
+    expect(r.exitCode).toBe(0);
+    const calls = ghCalls();
+    expect(calls).toContain(
+      `api --method POST repos/{owner}/{repo}/git/refs -f ref=refs/tags/${TAG} -f sha=${head()}`,
+    );
+    expect(calls).toMatch(new RegExp(`release create ${TAG} .*--verify-tag`));
+    expect(calls.indexOf("git/refs")).toBeLessThan(calls.indexOf("release create"));
+  });
+
+  test("確認の後で同名の tag が別の commit に現れたら、release を作らずに止める", () => {
+    const r = publish({ VIEW: "1", REF_EXISTING: other });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain(other);
+    expect(r.stderr.toString()).toContain(head());
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("同じ commit を指す既存の tag (再実行) なら、そのまま release を付ける", () => {
+    const r = publish({ VIEW: "1", REF_EXISTING: head() });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toMatch(new RegExp(`release create ${TAG} .*--verify-tag`));
+  });
+
+  test("注釈付き tag は指している commit で比べる", () => {
+    const tagObject = "fedcba9876543210fedcba9876543210fedcba98";
+
+    const same = publish({
+      VIEW: "1",
+      REF_EXISTING: tagObject,
+      REF_TYPE: "tag",
+      TAG_TARGET: head(),
+    });
+    expect(same.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`git/tags/${tagObject}`);
+
+    const diff = publish({
+      VIEW: "1",
+      REF_EXISTING: tagObject,
+      REF_TYPE: "tag",
+      TAG_TARGET: other,
+    });
+    expect(diff.exitCode).toBe(1);
+    expect(diff.stderr.toString()).toContain(other);
+  });
+
+  test("tag を作れない理由が「既にある」以外なら、止めて理由を出す", () => {
+    const r = publish({
+      VIEW: "1",
+      REF_CREATE_ERROR: "HTTP 403: Resource not accessible by integration",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("HTTP 403: Resource not accessible by integration");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("既存の tag は名前どおりの ref を読み、注釈付きはその tag object を読む", () => {
+    const tagObject = "fedcba9876543210fedcba9876543210fedcba98";
+
+    publish({ VIEW: "1", REF_EXISTING: tagObject, REF_TYPE: "tag", TAG_TARGET: head() });
+
+    const calls = ghCalls();
+    expect(calls).toContain(`api repos/{owner}/{repo}/git/ref/tags/${TAG} `);
+    expect(calls).toContain(`api repos/{owner}/{repo}/git/tags/${tagObject} `);
+  });
+
+  test("既存の tag を読めなければ止めて理由を出す", () => {
+    const r = publish({ VIEW: "1", REF_EXISTING: head(), REF_READ_ERROR: "HTTP 502: Bad Gateway" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("HTTP 502: Bad Gateway");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("「既にある」以外の 422 は既存の tag と読まずに止める", () => {
+    const r = publish({ VIEW: "1", REF_422_OTHER: "Repository rule violations found" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("Repository rule violations found");
+    expect(ghCalls()).not.toContain("git/ref/tags/");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("自分で作った tag は、release を作れず release も無いなら消す", () => {
+    const r = publish({ VIEW: "1", CREATE: "1", REF_NOW: head() });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).toContain(`api --method DELETE repos/{owner}/{repo}/git/refs/tags/${TAG}`);
+  });
+
+  test("release を作れなくても、release が残っているなら tag は消さない (release を切り離さない)", () => {
+    const r = publish({ CREATE: "1", REF_NOW: head() });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).toContain("release create");
+    expect(ghCalls()).not.toContain("--method DELETE");
+    expect(r.stderr.toString()).toContain("is kept: a release exists for it");
+  });
+
+  test("release を作れた run は、直後の view が not found と返っても tag を消さない", () => {
+    const r = publish({ VIEW: "1", REF_NOW: head() });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toContain("release create");
+    expect(ghCalls()).not.toContain("--method DELETE");
+  });
+
+  test("release の有無が分からないなら tag は消さない", () => {
+    const r = publish({ CREATE: "1", REF_NOW: head(), VIEW_ERROR: "HTTP 502: Bad Gateway" });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).toContain("release create");
+    expect(ghCalls()).not.toContain("--method DELETE");
+  });
+
+  test("消す直前に tag が別の commit へ動いていたら消さない", () => {
+    const r = publish({
+      VIEW: "1",
+      CREATE: "1",
+      REF_NOW: "0123456789abcdef0123456789abcdef01234567",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).not.toContain("--method DELETE");
+  });
+
+  test("注釈付き tag の object を読めなければ止めて理由を出す", () => {
+    const r = publish({
+      VIEW: "1",
+      REF_EXISTING: "fedcba9876543210fedcba9876543210fedcba98",
+      REF_TYPE: "tag",
+      TAG_READ_ERROR: "HTTP 500: Internal Server Error",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("HTTP 500: Internal Server Error");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("前からあった tag は、release を作れなくても消さない", () => {
+    const r = publish({ VIEW: "1", CREATE: "1", REF_EXISTING: head() });
+
+    expect(r.exitCode).toBe(1);
+    expect(ghCalls()).not.toContain("--method DELETE");
+  });
+
+  // 残った tag は次の run にも同名の tag として見え、次の tag をその上へ押し上げるので、
+  // 止める判断の後で tag を作ってはならない
+  test("版番号で止めた run は tag も作らない", () => {
+    git("tag", "v0.1.0");
+
+    const r = publish({
+      TAG: "v9.9.9-rc.1",
+      MAIN_SHA: "0123456789abcdef0123456789abcdef01234567",
+      VIEW: "1",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.1.0");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("git/refs");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
   });
 });
