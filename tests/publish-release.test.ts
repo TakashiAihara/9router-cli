@@ -37,7 +37,10 @@ case "$1 $2" in
     case "$*" in
       *isDraft*) echo "\${IS_DRAFT:-false}" ;;
       *assets*) printf '%s\n' "\${PUBLISHED_BINARIES:-}" ;;
-      *) exit "\${VIEW:-0}" ;;
+      *)
+        if [ -n "\${VIEW_ERROR:-}" ]; then echo "\${VIEW_ERROR}" >&2; exit 1; fi
+        if [ "\${VIEW:-0}" != 0 ]; then echo "release not found" >&2; fi
+        exit "\${VIEW:-0}" ;;
     esac ;;
   "release download")
     [ -n "$PUBLISHED_SUMS" ] || exit 1
@@ -63,6 +66,7 @@ function publish(env: Record<string, string | undefined> = {}) {
       HOME: sb.home,
       TAG,
       MAIN_SHA: head(),
+      RELEASE_TRIGGER: "push",
       PUBLISHED_SUMS: published,
       PUBLISHED_BINARIES: "9router-cli-linux-x64",
       ...env,
@@ -231,6 +235,7 @@ describe("publish-release.sh: 古い commit の新しい版番号 (#15)", () => 
 
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain("v0.2.0-rc.3");
+    expect(r.stderr.toString()).toContain("git push origin :refs/tags/v0.2.0");
     expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
   });
 
@@ -279,5 +284,105 @@ describe("publish-release.sh: 古い commit の新しい版番号 (#15)", () => 
 
     expect(r.exitCode).toBe(0);
     expect(ghCalls()).toContain(`release create v0.2.0 --target ${mainSha} --latest=true `);
+  });
+});
+
+describe("publish-release.sh: 版番号の並びと経路 (#15 の 2 周目)", () => {
+  // 辞書順では v0.1.0 < v0.10.0-rc.1 < v0.2.0 < v0.9.0。semver の最大 v0.10.0-rc.1 は先頭にも末尾にも来ない
+  let oldSha: string;
+  let mainSha: string;
+  beforeEach(() => {
+    oldSha = head();
+    git("tag", "v0.1.0");
+    git("tag", "v0.2.0");
+    git("tag", "v0.9.0");
+    git("commit", "-q", "--allow-empty", "-m", "main");
+    mainSha = head();
+    git("tag", "v0.10.0-rc.1");
+    git("checkout", "-q", oldSha);
+  });
+  const old = (env: Record<string, string | undefined>) =>
+    publish({ MAIN_SHA: mainSha, VIEW: "1", ...env });
+
+  test("minor は数値で比べる: v0.9.5 は v0.10.0-rc.1 より低いので公開する", () => {
+    const r = old({ TAG: "v0.9.5" });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`release create v0.9.5 --target ${oldSha} --latest=false `);
+  });
+
+  test("正式版はその rc より上: v0.10.0 は止める", () => {
+    const r = old({ TAG: "v0.10.0" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.10.0-rc.1");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+  });
+
+  test("major で決まる: v1.0.0 は止める", () => {
+    const r = old({ TAG: "v1.0.0" });
+
+    expect(r.exitCode).toBe(1);
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+  });
+
+  test("patch で決まる: main に v0.10.2 があるとき v0.10.3 は止め、v0.10.1 は通す", () => {
+    git("tag", "v0.10.2", mainSha);
+
+    const high = old({ TAG: "v0.10.3" });
+    expect(high.exitCode).toBe(1);
+    expect(high.stderr.toString()).toContain("v0.10.2");
+
+    const low = old({ TAG: "v0.10.1" });
+    expect(low.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`release create v0.10.1 --target ${oldSha} --latest=false `);
+  });
+
+  test("自動の rc で main が進んでいたら、公開せず緑で抜けて notice を残す", () => {
+    const r = old({ TAG: "v0.10.0-rc.2", RELEASE_TRIGGER: "workflow_run" });
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.toString()).toContain("::notice::");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+  });
+
+  test("workflow_dispatch の再リリースは版番号で止めない", () => {
+    const r = old({ TAG: "v0.10.0", RELEASE_TRIGGER: "workflow_dispatch" });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`release create v0.10.0 --target ${oldSha} --latest=false `);
+  });
+
+  test("RELEASE_TRIGGER が無ければ release を作らずに止まる", () => {
+    const r = old({ TAG: "v0.9.5", RELEASE_TRIGGER: undefined });
+
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("RELEASE_TRIGGER");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+  });
+
+  test("release の有無を読めない (not found 以外の失敗) なら止めて理由を出す", () => {
+    const r = old({ TAG: "v0.9.5", VIEW_ERROR: "HTTP 502: Bad Gateway" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("HTTP 502: Bad Gateway");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("桁あふれの版番号は release の形と認めず止める", () => {
+    const r = old({ TAG: "v99999999999999999999.0.0" });
+
+    expect(r.exitCode).toBe(1);
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+  });
+
+  test("先頭 0 の付いたタグは比較の相手に数えない", () => {
+    git("tag", "v0.011.0", mainSha);
+
+    const r = old({ TAG: "v0.10.0-rc.2" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.10.0-rc.1");
+    expect(r.stderr.toString()).not.toContain("v0.011.0");
   });
 });
