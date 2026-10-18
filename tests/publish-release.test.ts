@@ -524,4 +524,21 @@ describe("publish-release.sh: tag を先に作って競合を塞ぐ (#14)", () =
     expect(existsSync(calls) ? ghCalls() : "").not.toContain("git/refs");
     expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
   });
+
+  // 残った tag は次の run にも同名の tag として見え、次の tag をその上へ押し上げるので、
+  // 止める判断の後で tag を作ってはならない
+  test("版番号で止めた run は tag も作らない", () => {
+    git("tag", "v0.1.0");
+
+    const r = publish({
+      TAG: "v9.9.9-rc.1",
+      MAIN_SHA: "0123456789abcdef0123456789abcdef01234567",
+      VIEW: "1",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.1.0");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("git/refs");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
+  });
 });

@@ -23,6 +23,9 @@ set -eu
 : "${TAG:?TAG is required}"
 : "${MAIN_SHA:?MAIN_SHA is required}"
 : "${RELEASE_TRIGGER:?RELEASE_TRIGGER is required}"
+# The tag is made through the API, which is asked for a repository by name. GitHub Actions hands
+# every step GITHUB_REPOSITORY, so a run without it is not a run we can create a tag in.
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
 # Release tags are vX.Y.Z or vX.Y.Z-rc.N, with no leading zeros and no number wider than this.
 # The versions below are compared as numbers, and "v0.011.0" would compare as 0.11.0 while a
@@ -36,6 +39,9 @@ head="$(git rev-parse --verify HEAD)"
 # there (cut by hand for this rc, or left by a run that died after tagging) keeps its own
 # commit, so binaries built from $head would ship under a tag pointing somewhere else. Stop
 # before creating, so no such release is made and the operator picks the next tag.
+#
+# This only sees the tags this checkout carries, so create_tag below repeats the comparison
+# through the API, where a name pushed after this check is still refused.
 if tagged="$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" 2>/dev/null)"; then
   if [ "$tagged" != "$head" ]; then
     echo "tag ${TAG} already points at ${tagged}, but these binaries are built from ${head};" >&2
@@ -140,6 +146,51 @@ refuse_higher_than_existing() {
   fi
 }
 
+# Makes the tag through the API before the release exists, so the release can only end up under a
+# name whose commit was read here. The API refuses to reuse a name that is already taken, so a tag
+# pushed by hand after the check above cannot be adopted in silence; a name already on $head is the
+# same commit published again, which is what a re-run is, so it goes on.
+#
+# gh's stderr decides which failure this is. Only "Reference already exists" is evidence that the
+# name belongs to somebody; any other failure is this call failing, and gh's own words are the only
+# description of it worth repeating.
+create_tag() {
+  if create_err="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+    -f "ref=refs/tags/${TAG}" -f "sha=${head}" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+
+  case "$create_err" in
+    *"Reference already exists"*) ;;
+    *)
+      echo "could not create tag ${TAG}:" >&2
+      echo "$create_err" >&2
+      exit 1
+      ;;
+  esac
+
+  tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')" || {
+    echo "could not read tag ${TAG}:" >&2
+    exit 1
+  }
+  # An annotated tag's sha is the tag object rather than the commit, which is never the one these
+  # binaries were built from, so compare the commit that object points at and read a re-run as one.
+  object_type="${tag_ref%% *}"
+  tagged="${tag_ref#* }"
+  if [ "$object_type" = tag ]; then
+    tagged="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tagged}" --jq .object.sha)" || {
+      echo "could not read annotated tag ${TAG}:" >&2
+      exit 1
+    }
+  fi
+
+  if [ "$tagged" != "$head" ]; then
+    echo "tag ${TAG} now points at ${tagged}, but these binaries are built from ${head};" >&2
+    echo "not publishing them under it" >&2
+    exit 1
+  fi
+}
+
 # install.sh は Latest を配るので、main の先頭でない commit の release を Latest にしない
 if [ "$head" = "$MAIN_SHA" ]; then latest=true; else latest=false; fi
 
@@ -160,8 +211,12 @@ if [ "$head" != "$MAIN_SHA" ]; then
   refuse_higher_than_existing
 fi
 
-if gh release create "$TAG" --target "$head" --latest="$latest" --title "$TAG" --generate-notes \
-  dist/9router-cli-* dist/SHA256SUMS; then
+# create_tag leaves a tag on $head either way, so --verify-tag has one to find and the release
+# cannot land under a name this run never compared against $head.
+create_tag
+
+if gh release create "$TAG" --target "$head" --latest="$latest" --verify-tag --title "$TAG" \
+  --generate-notes dist/9router-cli-* dist/SHA256SUMS; then
   exit 0
 fi
 

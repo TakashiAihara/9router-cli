@@ -179,8 +179,9 @@ jobs:
         with:
           subject-path: "dist/9router-cli-*"
 
-      # --target は tag が無いとき、build した commit に tag を作る。この token が作った
-      # tag は workflow を起動しないので、上の tag push の trigger で二重に release されない。
+      # tag は publish-release.sh が API で先に作るので、この step には contents: write が要る。
+      # この token で作った tag は workflow を起動しないので、上の tag push の trigger で
+      # 二重に release されない。
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
