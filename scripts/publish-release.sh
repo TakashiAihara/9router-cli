@@ -13,10 +13,11 @@
 # files, unchanged", which is what "already published" has to mean; unequal sums mean
 # different bytes, and those are never replaced.
 #
-# Why $RELEASE_TRIGGER is needed: the three paths that reach this script disagree on what a tag
-# on a commit that is not main's head means. A hand-pushed tag is a person choosing a version and
-# is refused when it outranks what is already released; an automatic rc belongs to a commit main
-# has since moved past; a dispatch only re-runs a tag that was pushed before.
+# Why $RELEASE_TRIGGER is needed: the three paths that reach this script do not agree on a tag
+# from a commit that is not main's head. An automatic rc belongs to a commit main has since moved
+# past and publishes nothing. A hand-pushed tag is a person choosing a version, and a dispatch
+# re-runs a tag that was pushed before; both are refused when the version outranks the published
+# releases, because --latest=false keeps such a release out of GitHub's latest and nothing else.
 set -eu
 
 : "${TAG:?TAG is required}"
@@ -44,7 +45,7 @@ if tagged="$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" 2>/dev/null)"
 fi
 
 if ! printf '%s\n' "$TAG" | grep -E "$version_shape" >/dev/null; then
-  echo "tag ${TAG} is not vX.Y.Z or vX.Y.Z-rc.N, so it names no version to release" >&2
+  echo "tag ${TAG} is not vX.Y.Z or vX.Y.Z-rc.N: each number has no leading zero and 9 digits at most" >&2
   exit 1
 fi
 
@@ -83,17 +84,22 @@ version_gt() {
   return 1
 }
 
-# Stops when a tag with no release yet would rank above the tags that do have one.
+# Stops when a tag with no release yet would rank above the published releases.
+#
+# The partners are published releases rather than tags: a tag left on the remote by a refused
+# run, or one whose release is still a draft, is something nobody can install, so it must not be
+# what a new version has to stay below.
 #
 # gh reports a tag it has no release for as "release not found" and every other failure (network,
-# auth, a broken API) in its own words. Reading all of them as "does not exist" would let a
-# version that nobody can see reach the comparison below and outrank what is already out, so only
-# that one line counts as missing and the rest stops the run with what gh said.
+# auth, a broken API) in its own words. Only the first one is evidence that this tag is new.
+# Reading a failure as "not published" cannot let a version through -- the comparison below runs
+# either way -- it can only refuse a tag that was already published, and it would blame the
+# version number for a failure it knows nothing about.
 #
 # --latest=false keeps main out of GitHub's latest, but the number still reads as the newest
 # version to whoever picks a release by the highest tag, and keeps reading that way until main
 # ships something higher. That is what a backport is for: older code under a version below the
-# highest existing tag still says which code it carries, so it goes out.
+# highest published one still says which code it carries, so it goes out.
 refuse_higher_than_existing() {
   if view_err="$(gh release view "$TAG" 2>&1 >/dev/null)"; then
     return 0
@@ -107,22 +113,29 @@ refuse_higher_than_existing() {
       ;;
   esac
 
-  tags="$(git tag --list 'v*')"
-  # Both greps exit 1 on an empty result: no tag of the release shape at all, or nothing left
-  # once $TAG itself is taken out. Either way there is no partner to compare against, and a tag
-  # that is the only version number in the checkout says nothing about anyone else's. A git that
-  # fails to list them is not one of those: it stops at the assignment above.
-  existing="$(printf '%s\n' "$tags" | grep -E "$version_shape" | grep -Fxv -- "$TAG")" || existing=""
+  # gh's stderr comes along so a failure can be reported in gh's own words. A warning it prints
+  # on success stays in there too, and the shape below drops it before it is read as a version.
+  listed="$(gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' 2>&1)" || {
+    echo "could not read the list of published releases:" >&2
+    echo "$listed" >&2
+    exit 1
+  }
+  # Both greps exit 1 on an empty result: no published release carries a tag of this shape, or
+  # nothing is left once $TAG itself is taken out. Either way there is no partner to compare
+  # against, so nothing is refused. $TAG goes last because its own release was just found to be
+  # absent; comparing a tag with itself says nothing about the versions it could outrank.
+  existing="$(printf '%s\n' "$listed" | grep -E "$version_shape" | grep -Fxv -- "$TAG")" || existing=""
   highest=""
   for other in $existing; do
     if [ -z "$highest" ] || version_gt "$other" "$highest"; then highest="$other"; fi
   done
 
   if [ -n "$highest" ] && version_gt "$TAG" "$highest"; then
-    echo "tag ${TAG} is higher than ${highest}, the highest tag in this checkout;" >&2
+    echo "tag ${TAG} is higher than ${highest}, the highest published release;" >&2
     echo "not publishing it from ${head}, which is not main's head" >&2
-    echo "the pushed tag stays where it is, so the next runs see it too; delete it before" >&2
-    echo "cutting another one: git push origin :refs/tags/${TAG}" >&2
+    echo "if it was main's head when it was pushed and main moved on during the run, release it" >&2
+    echo "with workflow_dispatch once a published release above ${TAG} exists; otherwise delete" >&2
+    echo "the pushed tag, which the next runs see too: git push origin :refs/tags/${TAG}" >&2
     exit 1
   fi
 }
@@ -140,11 +153,10 @@ if [ "$head" != "$MAIN_SHA" ]; then
     echo "::notice::main has moved on since ${TAG} was decided; this run releases nothing"
     exit 0
   fi
-  # A dispatch only re-runs a tag that was pushed before, so its version is a fact already, not a
-  # new claim about which code is newest.
-  if [ "$RELEASE_TRIGGER" != workflow_dispatch ]; then
-    refuse_higher_than_existing
-  fi
+  # A dispatch re-runs a tag that was pushed before, which the check lets through for as long as
+  # that release exists. It is also how a refused tag gets released later, so it is not a way in
+  # around the check: nothing gets published by being dispatched a second time.
+  refuse_higher_than_existing
 fi
 
 if gh release create "$TAG" --target "$head" --latest="$latest" --title "$TAG" --generate-notes \

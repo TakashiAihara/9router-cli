@@ -63,15 +63,16 @@ jobs:
       tag: ${{ steps.decide.outputs.tag }}
     steps:
       # 入力を checkout の ref に使う前に見る。branch 名を渡されて、その branch の中身が
-      # tag の名前で release されるのを防ぐ。形は scripts/next-tag.ts が数えられる tag と同じ。
+      # tag の名前で release されるのを防ぐ。形は publish-release.sh が比べる形と同じで、数を
+      # 0 始まりにせず 9 桁までにする。ここで落ちれば checkout も build も走らない。
       - name: check the requested tag
         if: github.event_name != 'workflow_run'
         env:
           GIVEN: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          shape='^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
-          [[ "$GIVEN" =~ $shape ]] || { echo "::error::tag must be vX.Y.Z or vX.Y.Z-rc.N: $GIVEN"; exit 1; }
+          shape='^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-rc\.(0|[1-9][0-9]{0,8}))?$'
+          [[ "$GIVEN" =~ $shape ]] || { echo "::error::tag must be vX.Y.Z or vX.Y.Z-rc.N, 9 digits per number at most and no leading zero: $GIVEN"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || (github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag)) || github.ref }}
@@ -120,8 +121,9 @@ jobs:
           # 同じ commit の再実行は、別の tag を切らず前回の tag を使う。
           # 自動の再実行が使い直すのは自分が切った rc の tag だけ。同じ commit に手の正式版があっても選ばない
           rc_tags="$(git tag --points-at HEAD --list 'v*-rc.*')"
-          # 一致が 0 件の grep は 1 で抜けるので、それだけを空として受ける (git の失敗は上の代入で止まる)
-          existing="$(printf '%s\n' "$rc_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' | sort -V | tail -n 1)" || existing=""
+          # 一致が 0 件の grep は 1 で抜けるので、それだけを空として受ける (git の失敗は上の代入で止まる)。
+          # publish-release.sh と同じ形で見るので、ここで拾った tag は後で release できる
+          existing="$(printf '%s\n' "$rc_tags" | grep -E '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})-rc\.(0|[1-9][0-9]{0,8})$' | sort -V | tail -n 1)" || existing=""
           # コマンド置換は代入に分ける。echo の引数の中に置くと、失敗しても set -e が止まらず
           # 空の tag で緑のまま終わる。
           if [ -n "$existing" ]; then
@@ -187,9 +189,8 @@ jobs:
           RELEASE_TRIGGER: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          # main の先頭と比べるためと、publish-release.sh が「その tag が既に誰のものか」と
-          # 「既存の tag のどれより高い版番号か」を確かめるため。checkout は shallow なので
-          # tag は勝手には取られない。
+          # main の先頭と比べるためと、publish-release.sh が「その tag が既に誰のものか」を確かめる
+          # ため。版の比較は gh release list で行う。checkout は shallow なので tag は勝手には取られない。
           git fetch --no-tags origin \
             '+refs/heads/main:refs/remotes/origin/main' \
             '+refs/tags/*:refs/tags/*'

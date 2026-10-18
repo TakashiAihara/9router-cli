@@ -9,8 +9,14 @@ const read = (file: string) => readFileSync(join(dir, file), "utf8");
 const release = () =>
   Bun.YAML.parse(read("release.yml")) as {
     concurrency: { group: string; "cancel-in-progress": boolean };
-    jobs: { build: { steps: { name: string; run?: string; env?: Record<string, string> }[] } };
+    jobs: {
+      tag: { steps: { name: string; run?: string }[] };
+      build: { steps: { name: string; run?: string; env?: Record<string, string> }[] };
+    };
   };
+type Job = keyof ReturnType<typeof release>["jobs"];
+const stepRun = (job: Job, name: string) =>
+  release().jobs[job].steps.find((step) => step.name === name)?.run ?? "";
 const releaseStep = () =>
   release().jobs.build.steps.find((step) => step.name === "release")?.run ?? "";
 
@@ -142,9 +148,9 @@ describe("action の固定", () => {
   });
 });
 
-// publish-release.sh は main の先頭と比べるのと、既存の tag のどれより高い版番号かを確かめる。
-// build job の checkout は shallow なので、この 2 つは release step の fetch が全部取って初めて
-// できる。tag を取れずに release すると、版番号の比較は「0 個の tag」と読んで常に許す
+// publish-release.sh は main の先頭と比べるのと、push / dispatch で checkout された tag が既に
+// 誰のものかを確かめる。build job の checkout は shallow なので、release step の fetch が全部
+// 取って初めてできる。版の比較は gh release list を見るので、この tag 一覧には依存しない
 describe("release.yml の build job", () => {
   test("publish-release.sh を走らせる前に全 tag を fetch する", () => {
     const run = releaseStep();
@@ -155,11 +161,33 @@ describe("release.yml の build job", () => {
   });
 
   // push / workflow_run / workflow_dispatch で「main の先頭でない commit の tag」の扱い方が
-  // 変わる。スクリプトは event 名以外から経路を知れないので、この env が抜けたら全部同じ
-  // 経路になり、自動 rc が古い commit を版の大きい tag で公開してしまう
+  // 変わる。スクリプトは event 名以外から経路を知れないので、この env が抜けると `:?` の
+  // 検査で止まり、release を作る前に必ず失敗する
   test("publish-release.sh に event 名を渡す", () => {
     const env = release().jobs.build.steps.find((step) => step.name === "release")?.env ?? {};
 
     expect(env.RELEASE_TRIGGER).toBe("${{ github.event_name }}");
+  });
+});
+
+// publish-release.sh は `:?` の後で tag の形を严格要求する (0 始まりと 9 桁を超える数を受け付け
+// ない)。workflow 側が緩い形だと、checkout と build を全部走らせてから script で落とすことになる
+describe("release.yml の tag の形", () => {
+  test("check the requested tag が publish-release.sh と同じ形で見る", () => {
+    const run = stepRun("tag", "check the requested tag");
+
+    expect(run).toContain(
+      "shape='^v(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(-rc\\.(0|[1-9][0-9]{0,8}))?$'",
+    );
+    expect(run).not.toContain("[0-9]+\\.");
+  });
+
+  // 取り直しの tag も後で release できる必要がある。緩い形だと script で落とす
+  test("decide the tag が取り直し用の rc tag も同じ形で見る", () => {
+    const run = stepRun("tag", "decide the tag");
+
+    expect(run).toContain(
+      "grep -E '^v(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})-rc\\.(0|[1-9][0-9]{0,8})$'",
+    );
   });
 });
