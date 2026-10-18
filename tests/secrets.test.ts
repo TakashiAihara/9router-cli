@@ -19,7 +19,7 @@ import {
 import { adminCalls, API_KEY, DASHBOARD_PASSWORD, startFake } from "./helpers/fake-router.ts";
 
 const COMBOS_LIST = tsv(
-  "free-forever\tkr/dead → oc/good",
+  "my-combo\tkr/dead → oc/good",
   "translate\tocg/good → ocg/sse",
   "shared\toc/good → ocg/good",
 );
@@ -128,9 +128,7 @@ describe("秘密が env に無いとき", () => {
     const r = await bare(["models"], { CMD_CR: "1" });
 
     expect(r.code).toBe(0);
-    expect(r.out).toBe(
-      tsv("free-forever", "ocg/good", "kr/dead", "ocg/sse", "ocgx/foo", "oc/good"),
-    );
+    expect(r.out).toBe(tsv("my-combo", "ocg/good", "kr/dead", "ocg/sse", "ocgx/foo", "oc/good"));
     expect(ctx.fake.log[0]?.auth).toBe(`Bearer ${API_KEY}`);
   });
 

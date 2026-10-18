@@ -38,7 +38,7 @@ const PROXY_PAGE = `<!DOCTYPE html>
 `;
 
 const SESSION_COOKIE = "auth_token=tok-9f2";
-const MODEL_IDS = ["free-forever", "ocg/good", "kr/dead", "ocg/sse", "ocgx/foo", "oc/good"];
+const MODEL_IDS = ["my-combo", "ocg/good", "kr/dead", "ocg/sse", "ocgx/foo", "oc/good"];
 
 export type Logged = {
   method: string;
@@ -119,7 +119,7 @@ function chat(model: string, leaky: boolean): Chat {
     return { kind: "json", status: 200, body: completion("empty-resolved", "") };
   }
   const resolved = `${model.split("/").pop()}-resolved`;
-  if (model.endsWith("/good") || ["free-forever", "translate", "shared"].includes(model)) {
+  if (model.endsWith("/good") || ["my-combo", "translate", "shared"].includes(model)) {
     return { kind: "json", status: 200, body: completion(resolved, "OK") };
   }
   return { kind: "json", status: 404, body: { error: { message: "Model not found" } } };
@@ -132,7 +132,7 @@ const sse = (text: string) =>
 export function startFake(options: FakeOptions = {}): Fake {
   const log: Logged[] = [];
   const combos = options.initialCombos ?? [
-    { id: "id-ff", name: "free-forever", kind: null, models: ["kr/dead", "oc/good"] },
+    { id: "id-ff", name: "my-combo", kind: null, models: ["kr/dead", "oc/good"] },
     { id: "id-tr", name: "translate", kind: null, models: ["ocg/good", "ocg/sse"] },
     { id: "id-sh", name: "shared", kind: null, models: ["oc/good", "ocg/good"] },
   ];

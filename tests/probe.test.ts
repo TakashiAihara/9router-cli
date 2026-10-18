@@ -180,7 +180,7 @@ describe("probe", () => {
 
 describe("probe --combo / --all-combos", () => {
   test("--combo は各段を先に当ててから combo 自身を当てる。接頭辞の無い名前にも対照を当てる", async () => {
-    const r = await ctx.run(["probe", "--combo", "free-forever"]);
+    const r = await ctx.run(["probe", "--combo", "my-combo"]);
 
     expect(r.code).toBe(1);
     expect(normalizeElapsed(r.out)).toBe(
@@ -190,7 +190,7 @@ describe("probe --combo / --all-combos", () => {
         `CTRL\t404\t${ctrl(null)}`,
         "NG\t403\t<t>\tkr/dead\t-\t[403]: FreeTierError",
         "OK\t200\t<t>\toc/good\tgood-resolved\tOK",
-        "OK\t200\t<t>\tfree-forever\tfree-forever-resolved\tOK",
+        "OK\t200\t<t>\tmy-combo\tmy-combo-resolved\tOK",
         "ok=2 ng=1 controls=3",
       ),
     );
@@ -200,7 +200,7 @@ describe("probe --combo / --all-combos", () => {
       ctrl(null),
       "kr/dead",
       "oc/good",
-      "free-forever",
+      "my-combo",
     ]);
     expect(adminCalls(ctx.fake.log)).toEqual(["POST /api/auth/login", "GET /api/combos"]);
   });
@@ -217,7 +217,7 @@ describe("probe --combo / --all-combos", () => {
       ctrl("ocg"),
       "kr/dead",
       "oc/good",
-      "free-forever",
+      "my-combo",
       "ocg/good",
       "ocg/sse",
       "translate",
@@ -240,7 +240,7 @@ describe("probe --combo / --all-combos", () => {
       "ocg/good",
       "shared",
       "kr/dead",
-      "free-forever",
+      "my-combo",
       "translate",
     ]);
   });

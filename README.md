@@ -68,7 +68,7 @@ NINE_ROUTER_COMMAND_TIMEOUT=180 9router-cli models
 
 ## 定期メンテナンス
 
-`NINE_ROUTER_URL` に接続先を設定してから使う。たとえば `https://9router.takashiaihara.site`。管理操作には dashboard パスワード、`models` と `probe` には endpoint API key が必要。
+`NINE_ROUTER_URL` に接続先を設定してから使う。たとえば `https://9router.example.com`。管理操作には dashboard パスワード、`models` と `probe` には endpoint API key が必要。
 
 ```sh
 9router-cli providers list
@@ -80,10 +80,10 @@ NINE_ROUTER_COMMAND_TIMEOUT=180 9router-cli models
 9router-cli providers delete PROVIDER_ID
 
 9router-cli models --prefix kr
-9router-cli probe kr/model-name --combo free-forever
+9router-cli probe kr/model-name --combo my-combo
 9router-cli probe --all-combos --json
 9router-cli combos list
-9router-cli combos set free-forever kr/model-name oc/model-name
+9router-cli combos set my-combo kr/model-name oc/model-name
 9router-cli combos set new-combo kr/model-name --create
 9router-cli combos delete new-combo
 9router-cli version
