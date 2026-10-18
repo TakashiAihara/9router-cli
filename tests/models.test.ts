@@ -17,9 +17,7 @@ describe("models", () => {
     const r = await ctx.run(["models"], { NINE_ROUTER_DASHBOARD_PASSWORD: undefined });
 
     expect(r.code).toBe(0);
-    expect(r.out).toBe(
-      tsv("free-forever", "ocg/good", "kr/dead", "ocg/sse", "ocgx/foo", "oc/good"),
-    );
+    expect(r.out).toBe(tsv("my-combo", "ocg/good", "kr/dead", "ocg/sse", "ocgx/foo", "oc/good"));
     expect(ctx.fake.log).toHaveLength(1);
     expect(ctx.fake.log[0]?.method).toBe("GET");
     expect(ctx.fake.log[0]?.path).toBe("/v1/models");

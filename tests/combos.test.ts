@@ -11,7 +11,7 @@ describe("combos list", () => {
     expect(r.code).toBe(0);
     expect(r.out).toBe(
       tsv(
-        "free-forever\tkr/dead → oc/good",
+        "my-combo\tkr/dead → oc/good",
         "translate\tocg/good → ocg/sse",
         "shared\toc/good → ocg/good",
       ),
@@ -36,7 +36,7 @@ describe("combos list", () => {
 
     expect(r.code).toBe(0);
     expect(JSON.parse(r.out)).toEqual([
-      { id: "id-ff", name: "free-forever", models: ["kr/dead", "oc/good"] },
+      { id: "id-ff", name: "my-combo", models: ["kr/dead", "oc/good"] },
       { id: "id-tr", name: "translate", models: ["ocg/good", "ocg/sse"] },
       { id: "id-sh", name: "shared", models: ["oc/good", "ocg/good"] },
     ]);
