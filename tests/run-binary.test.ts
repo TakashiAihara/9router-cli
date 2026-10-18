@@ -66,12 +66,13 @@ describe("scripts/run-binary.sh (#13)", () => {
     const r = run(join(sb.dir, "9router-cli-darwin-arm64"), "v0.4.2-rc.7");
 
     expect(r.exitCode).toBe(1);
-    expect(r.stderr.toString()).toContain("9router-cli-darwin-arm64");
+    expect(r.stderr.toString()).toContain("9router-cli-darwin-arm64 does not exist");
   });
 
   test("引数が足りなければ 2", () => {
     const r = Bun.spawnSync(["/bin/sh", SCRIPT], { cwd: sb.dir, env: { PATH: process.env.PATH } });
 
     expect(r.exitCode).toBe(2);
+    expect(r.stderr.toString()).toContain("usage:");
   });
 });

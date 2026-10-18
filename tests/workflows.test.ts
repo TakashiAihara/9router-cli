@@ -12,13 +12,17 @@ const release = () =>
     jobs: {
       tag: { steps: { name: string; run?: string }[] };
       build: { steps: { name: string; run?: string; env?: Record<string, string> }[] };
+      publish: {
+        permissions?: Record<string, string>;
+        steps: { name: string; run?: string; env?: Record<string, string> }[];
+      };
     };
   };
 type Job = keyof ReturnType<typeof release>["jobs"];
 const stepRun = (job: Job, name: string) =>
   release().jobs[job].steps.find((step) => step.name === name)?.run ?? "";
 const releaseStep = () =>
-  release().jobs.build.steps.find((step) => step.name === "release")?.run ?? "";
+  release().jobs.publish.steps.find((step) => step.name === "release")?.run ?? "";
 
 const REPO = "TakashiAihara/9router-cli";
 
@@ -149,9 +153,9 @@ describe("action の固定", () => {
 });
 
 // publish-release.sh は main の先頭と比べるのと、push / dispatch で checkout された tag が既に
-// 誰のものかを確かめる。build job の checkout は shallow なので、release step の fetch が全部
+// 誰のものかを確かめる。checkout は shallow なので、release step の fetch が全部
 // 取って初めてできる。版の比較は gh release list を見るので、この tag 一覧には依存しない
-describe("release.yml の build job", () => {
+describe("release.yml の publish job", () => {
   test("publish-release.sh を走らせる前に全 tag を fetch する", () => {
     const run = releaseStep();
 
@@ -164,7 +168,7 @@ describe("release.yml の build job", () => {
   // 変わる。スクリプトは event 名以外から経路を知れないので、この env が抜けると `:?` の
   // 検査で止まり、release を作る前に必ず失敗する
   test("publish-release.sh に event 名を渡す", () => {
-    const env = release().jobs.build.steps.find((step) => step.name === "release")?.env ?? {};
+    const env = release().jobs.publish.steps.find((step) => step.name === "release")?.env ?? {};
 
     expect(env.RELEASE_TRIGGER).toBe("${{ github.event_name }}");
   });
@@ -172,13 +176,9 @@ describe("release.yml の build job", () => {
   // publish-release.sh は tag を API で ref として作るので、この job に書き込み権限が無いと
   // tag が作れず、すべての release が止まる
   test("release step の job が ref を作れる contents: write を持つ", () => {
-    const build = (
-      Bun.YAML.parse(read("release.yml")) as {
-        jobs: { build: { permissions?: Record<string, string> } };
-      }
-    ).jobs.build;
+    const publish = release().jobs.publish;
 
-    expect(build.permissions?.contents).toBe("write");
+    expect(publish.permissions?.contents).toBe("write");
   });
 });
 
@@ -267,5 +267,38 @@ describe("release.yml: 公開前に 4 種を各 runner で動かす (#13)", () =
     expect(publish!.permissions?.["id-token"]).toBe("write");
     expect(runs(build!)).not.toContain("publish-release.sh");
     expect(uses(build!, "actions/attest-build-provenance")).toBe(false);
+  });
+});
+
+// publish が照合する SHA256SUMS は build が出したものです。バイナリか sums の片方だけが
+// artifact に入れば、公開する物と照合する物が食い違う (#13)
+describe("release.yml: build の上げる artifact (#13)", () => {
+  type Step = {
+    uses?: string;
+    with?: Record<string, unknown>;
+    env?: Record<string, string>;
+    run?: string;
+  };
+  type Job = { steps: Step[] };
+  const job = (name: string) =>
+    (Bun.YAML.parse(read("release.yml")) as { jobs: Record<string, Job> }).jobs[name]!;
+  const upload = () =>
+    job("build").steps.find((s) => s.uses?.startsWith("actions/upload-artifact@"))?.with ?? {};
+
+  test("4 個と SHA256SUMS を同じ artifact に上げる", () => {
+    const path = String(upload().path ?? "");
+
+    expect(path).toContain("dist/9router-cli-*");
+    expect(path).toContain("dist/SHA256SUMS");
+  });
+
+  // 走らせるのは matrix の target、中身は publish する tag。どちらかが欠けると、別の
+  // バイナリか別の tag を検査したことになる
+  test("verify は tag と target を script に渡す", () => {
+    const step = job("verify").steps.find((s) => s.run?.includes("run-binary.sh"));
+
+    expect(step?.env?.TAG).toBe("${{ needs.tag.outputs.tag }}");
+    expect(step?.env?.TARGET).toBe("${{ matrix.target }}");
+    expect(step?.run).toContain('sh scripts/run-binary.sh "dist/9router-cli-$TARGET" "$TAG"');
   });
 });
