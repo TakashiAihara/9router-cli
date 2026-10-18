@@ -147,14 +147,41 @@ refuse_higher_than_existing() {
 # command here gets it, so an API tag cannot land in a different repository than the release.
 api_repo='repos/{owner}/{repo}'
 
-# The tag has to exist before the release does. gh release create makes the tag itself when it is
-# missing, which leaves a window between reading the tag and creating the release that a hand push of
-# the same name can walk into; creating it here and passing --verify-tag closes that window for the
-# path this script drives. It is not a lock: the tag can still be moved while the assets upload.
-#
-# Making the ref is also the only way to know whether this run or an earlier one owns it, which is
-# what tells a tag left behind by a failed run from a tag that belongs to somebody.
+# Whether this run made the tag, and whether it went on to release it. A tag this run made is
+# disposable until a release exists for it, and disposable only then.
 tag_created=false
+released=false
+
+# Scratch files for one run. The error file is written separately because gh's stdout is parsed in
+# places, and a warning arriving on stderr would be read as part of the value it answered with.
+scratch="$(mktemp -d)"
+gh_err="${scratch}/gh-err"
+published=""
+
+# The commit an existing tag points at: the ref's own sha, or, for an annotated tag, the commit its
+# tag object names. Returns non-zero when the tag cannot be read, after saying what gh said.
+tag_commit() {
+  if ! ref_out="$(gh api "${api_repo}/git/ref/tags/${TAG}" \
+    --jq '.object.type + " " + .object.sha' 2>"${gh_err}")"; then
+    echo "could not read tag ${TAG}:" >&2
+    cat "${gh_err}" >&2
+    return 1
+  fi
+
+  # An annotated tag's sha is the tag object rather than the commit, which is never the one these
+  # binaries were built from, so compare the commit that object points at and read a re-run as one.
+  object_type="${ref_out%% *}"
+  tagged="${ref_out#* }"
+  if [ "$object_type" = tag ]; then
+    if ! tagged="$(gh api "${api_repo}/git/tags/${tagged}" --jq .object.sha 2>"${gh_err}")"; then
+      echo "could not read annotated tag ${TAG}:" >&2
+      cat "${gh_err}" >&2
+      return 1
+    fi
+  fi
+
+  printf '%s\n' "$tagged"
+}
 
 # Whether the existing tag points at $head. A name already on $head is the same commit published
 # again, which is what a re-run is, so it goes on to the release; anything else is somebody else's
@@ -163,21 +190,8 @@ tag_created=false
 # A read failure is its own case: "the tag is not there" and "I could not find out" have to stay
 # apart, or a network blip would read as permission to publish under a tag this run never saw.
 tag_is_head() {
-  if ! tag_ref="$(gh api "${api_repo}/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha' 2>&1)"; then
-    echo "could not read tag ${TAG}:" >&2
-    echo "$tag_ref" >&2
+  if ! tagged="$(tag_commit)"; then
     exit 1
-  fi
-  # An annotated tag's sha is the tag object rather than the commit, which is never the one these
-  # binaries were built from, so compare the commit that object points at and read a re-run as one.
-  object_type="${tag_ref%% *}"
-  tagged="${tag_ref#* }"
-  if [ "$object_type" = tag ]; then
-    if ! tagged="$(gh api "${api_repo}/git/tags/${tagged}" --jq .object.sha 2>&1)"; then
-      echo "could not read annotated tag ${TAG}:" >&2
-      echo "$tagged" >&2
-      exit 1
-    fi
   fi
 
   if [ "$tagged" != "$head" ]; then
@@ -187,6 +201,13 @@ tag_is_head() {
   fi
 }
 
+# The tag has to exist before the release does. gh release create makes the tag itself when it is
+# missing, which leaves a window between reading the tag and creating the release that a hand push of
+# the same name can walk into; creating it here and passing --verify-tag closes that window for the
+# path this script drives. It is not a lock: the tag can still be moved while the assets upload.
+#
+# Making the ref is also the only way to know whether this run or an earlier one owns it, which is
+# what tells a tag left behind by a failed run from a tag that belongs to somebody.
 create_tag() {
   # gh's stderr decides which failure this is. "Reference already exists" is the only evidence that
   # the name is taken, and a different 422 (a repository rule, say) is this call failing, not evidence
@@ -209,18 +230,76 @@ create_tag() {
   tag_is_head
 }
 
-# A tag this run made and is not releasing is worse than no tag: next-tag.ts counts every tag it
-# finds, so the one left behind would push the next version number up for every run after it, and
-# every later run would see a version number nobody can publish. A tag that already existed belongs
-# to whoever made it, so it is left alone.
-drop_tag_if_made_here() {
-  [ "$tag_created" = true ] || return 0
-  if ! drop_err="$(gh api --method DELETE "${api_repo}/git/refs/tags/${TAG}" 2>&1 >/dev/null)"; then
-    echo "could not delete tag ${TAG}, which this run made; delete it by hand:" >&2
-    echo "git push origin :refs/tags/${TAG}" >&2
-    echo "$drop_err" >&2
-  fi
+# keep_tag / drop_tag_if_unreleased / cleanup は EXIT の trap の文字列からしか呼ばれず、shellcheck は
+# trap の文字列を読まないので、呼ばれない関数 (SC2329) と見なされる。3 つにだけ抑止を付ける
+# shellcheck disable=SC2329
+keep_tag() {
+  echo "tag ${TAG} is kept: ${1}; to remove it: git push origin :refs/tags/${TAG}" >&2
 }
+
+# A tag this run made and is not releasing is worse than no tag: next-tag.ts counts every tag it
+# finds, so the one left behind would make it count past this version and skip one rc number. That is
+# only true while nothing is released under the tag, so every other reason to keep it wins: a
+# release that exists at all, even a draft or one whose upload was cut off, is something people
+# install from, and a tag that has been moved since this run made it is not this run's to delete.
+# Anything this cannot settle also keeps the tag, because deleting on a guess is what this is here to
+# prevent.
+# shellcheck disable=SC2329
+drop_tag_if_unreleased() {
+  if [ "$tag_created" != true ] || [ "$released" = true ]; then
+    return 0
+  fi
+
+  if view_err="$(gh release view "$TAG" 2>&1 >/dev/null)"; then
+    keep_tag "a release exists for it"
+    return 0
+  fi
+  # gh reports a tag it has no release for as "release not found" and every other failure (network,
+  # auth, a broken API) in its own words. Only the first one is evidence that no release survived, and
+  # reading any other failure as one would delete the tag under a release nobody managed to read.
+  case "$view_err" in
+    *"release not found"*) ;;
+    *)
+      keep_tag "could not tell whether a release exists for it"
+      return 0
+      ;;
+  esac
+
+  if ! tagged="$(tag_commit)"; then
+    keep_tag "could not read it back"
+    return 0
+  fi
+  if [ "$tagged" != "$head" ]; then
+    keep_tag "it points at ${tagged}, not at the commit this run built"
+    return 0
+  fi
+
+  if ! drop_err="$(gh api --method DELETE "${api_repo}/git/refs/tags/${TAG}" 2>&1 >/dev/null)"; then
+    keep_tag "deleting it failed"
+    echo "$drop_err" >&2
+    return 0
+  fi
+  echo "deleted tag ${TAG}, which this run made and did not release" >&2
+}
+
+# One exit path for the scratch files and the tag, because the ways this run can stop are not all
+# visible where they happen: a job cancelled while the assets upload looks exactly like a failure, and
+# a trap that only some exits reached would not see it. The signals go through exit so the handler
+# runs for those too. The tag goes first, since it is the only step whose result can be reasoned
+# about; scratch files are removed after, and the last word is returned so this cannot change the
+# status the script exits with.
+# shellcheck disable=SC2329
+cleanup() {
+  drop_tag_if_unreleased
+  rm -rf "$scratch"
+  if [ -n "$published" ]; then rm -rf "$published"; fi
+  return 0
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # install.sh は Latest を配るので、main の先頭でない commit の release を Latest にしない
 if [ "$head" = "$MAIN_SHA" ]; then latest=true; else latest=false; fi
@@ -244,30 +323,31 @@ fi
 
 create_tag
 
-# --verify-tag then attaches the release to the tag this run made or read, instead of gh making a
-# tag of its own from --target. --target is kept because the tests match it and because it names
-# the commit in the log, but with the tag already there it decides nothing.
+# --verify-tag attaches the release to the tag this run made or read, instead of gh making a tag of
+# its own. --target is redundant with it and kept for the log: it names the commit the release was
+# built from where somebody reading a failed run looks for it.
 if gh release create "$TAG" --target "$head" --latest="$latest" --verify-tag --title "$TAG" \
   --generate-notes dist/9router-cli-* dist/SHA256SUMS; then
+  released=true
   exit 0
 fi
 
 echo "release ${TAG} was not created; checking whether it is already published" >&2
 gh release view "$TAG" >/dev/null \
-  || { echo "could not read release ${TAG}, so the failure above is the real one" >&2; drop_tag_if_made_here; exit 1; }
+  || { echo "could not read release ${TAG}, so the failure above is the real one" >&2; exit 1; }
 
 # A draft is not published: /releases/latest never points at it and its assets are not offered,
-# so "already published" would be a lie install.sh finds out about only after it hands one out.
+# so "already published" would be a lie install.sh finds out about only after it hands one out. Its
+# tag stays either way, which is why the advice is to publish or delete the release and not the tag:
+# cleanup keeps the tag of anything that has a release under it.
 if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
   echo "release ${TAG} is a draft; publish or delete it by hand" >&2
-  drop_tag_if_made_here
   exit 1
 fi
 
 published="$(mktemp -d)"
-trap 'rm -rf "$published"' EXIT
 gh release download "$TAG" --pattern SHA256SUMS --dir "$published" \
-  || { echo "release ${TAG} exists without SHA256SUMS; fix or delete it by hand" >&2; drop_tag_if_made_here; exit 1; }
+  || { echo "release ${TAG} exists without SHA256SUMS; fix or delete it by hand" >&2; exit 1; }
 
 if cmp -s dist/SHA256SUMS "${published}/SHA256SUMS"; then
   # Matching sums only say the sums match. Read the asset list too (downloading 4 binaries to
@@ -276,16 +356,16 @@ if cmp -s dist/SHA256SUMS "${published}/SHA256SUMS"; then
   assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
   # sha256sum writes "hash  name" and "hash *name"; the last field is the asset name either way
   names="$(awk '{print $NF}' "${published}/SHA256SUMS" | tr -d '*')"
-  [ -n "$names" ] || { echo "release ${TAG} has an empty SHA256SUMS; fix or delete it by hand" >&2; drop_tag_if_made_here; exit 1; }
+  [ -n "$names" ] || { echo "release ${TAG} has an empty SHA256SUMS; fix or delete it by hand" >&2; exit 1; }
   for name in $names; do
     printf '%s\n' "$assets" | grep -Fxq -- "$name" \
-      || { echo "release ${TAG} has no asset ${name}; fix or delete it by hand" >&2; drop_tag_if_made_here; exit 1; }
+      || { echo "release ${TAG} has no asset ${name}; fix or delete it by hand" >&2; exit 1; }
   done
   echo "release ${TAG} is already published with the same SHA256SUMS; nothing to do"
+  released=true
   exit 0
 fi
 
 echo "release ${TAG} is published with different SHA256SUMS; not overwriting it:" >&2
 diff "${published}/SHA256SUMS" dist/SHA256SUMS >&2 || true
-drop_tag_if_made_here
 exit 1

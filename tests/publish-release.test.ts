@@ -565,6 +565,15 @@ describe("publish-release.sh: tag を先に作って競合を塞ぐ (#14)", () =
     expect(r.exitCode).toBe(1);
     expect(ghCalls()).toContain("release create");
     expect(ghCalls()).not.toContain("--method DELETE");
+    expect(r.stderr.toString()).toContain("is kept: a release exists for it");
+  });
+
+  test("release を作れた run は、直後の view が not found と返っても tag を消さない", () => {
+    const r = publish({ VIEW: "1", REF_NOW: head() });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toContain("release create");
+    expect(ghCalls()).not.toContain("--method DELETE");
   });
 
   test("release の有無が分からないなら tag は消さない", () => {
