@@ -152,7 +152,6 @@ api_repo='repos/{owner}/{repo}'
 tag_created=false
 released=false
 
-
 published=""
 
 # The commit an existing tag points at: the ref's own sha, or, for an annotated tag, the commit its
@@ -282,9 +281,10 @@ drop_tag_if_unreleased() {
 
 # One exit path for the scratch files and the tag, because an unexpected stop under set -e is not
 # visible where it happens. A cancelled job is not covered: the runner signals the step's shell, not
-# this script, and SIGKILL follows within seconds, so a cancel or a kill can leave a tag this run
-# made with no release (README says how to remove it). set +e keeps one failing step here from
-# skipping the rest, and the exit status is the script's own, since an EXIT handler does not change it.
+# this script, so this script may be killed before it gets here, or may run on as an orphan; a cancel
+# or a kill can therefore leave a tag this run made with no release (README says how to remove it).
+# set +e keeps one failing step here from skipping the rest, and with nothing here calling exit the
+# script keeps the exit status it already had.
 # shellcheck disable=SC2329
 cleanup() {
   set +e
