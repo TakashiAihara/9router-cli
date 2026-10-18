@@ -270,7 +270,7 @@ describe("release.yml: 公開前に 4 種を各 runner で動かす (#13)", () =
   });
 });
 
-// publish が照合する SHA256SUMS は build が出したものです。バイナリか sums の片方だけが
+// publish が照合する SHA256SUMS は build が出したもの。バイナリか sums の片方だけが
 // artifact に入れば、公開する物と照合する物が食い違う (#13)
 describe("release.yml: build の上げる artifact (#13)", () => {
   type Step = {
