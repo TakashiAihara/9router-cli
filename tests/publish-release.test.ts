@@ -42,6 +42,9 @@ case "$1 $2" in
         if [ "\${VIEW:-0}" != 0 ]; then echo "release not found" >&2; fi
         exit "\${VIEW:-0}" ;;
     esac ;;
+  "release list")
+    if [ -n "\${LIST_ERROR:-}" ]; then echo "\${LIST_ERROR}" >&2; exit 1; fi
+    if [ -n "\${PUBLISHED_TAGS+x}" ]; then printf '%s\n' "\${PUBLISHED_TAGS}"; else git tag --list 'v*'; fi ;;
   "release download")
     [ -n "$PUBLISHED_SUMS" ] || exit 1
     while [ $# -gt 0 ]; do [ "$1" = --dir ] && dir="$2"; shift; done
@@ -97,8 +100,7 @@ describe("publish-release.sh", () => {
     expect(ghCalls()).toContain(`--target ${head()} --latest=false `);
   });
 
-  // 比べる相手が 1 つも無い状態。tag を 1 つも持たない最初の release もここを通るので、
-  // 比較が対象を見つけられずに落ちてはいけない (#15)
+  // 比べる相手が 1 つも無い状態でも、比較が対象を見つけられずに落ちてはいけない (#15)
   test("tag が 1 つも無い checkout でも、版番号の比較で止めない", () => {
     const r = publish({ MAIN_SHA: "0123456789abcdef0123456789abcdef01234567", VIEW: "1" });
 
@@ -346,11 +348,60 @@ describe("publish-release.sh: 版番号の並びと経路 (#15 の 2 周目)", (
     expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
   });
 
-  test("workflow_dispatch の再リリースは版番号で止めない", () => {
+  test("workflow_dispatch でも、release の無い高い版番号は止める (push で拒否されたタグの抜け道を塞ぐ)", () => {
     const r = old({ TAG: "v0.10.0", RELEASE_TRIGGER: "workflow_dispatch" });
 
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.10.0-rc.1");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("workflow_dispatch の再リリースは、release があるなら版番号で止めない", () => {
+    published(BUILT);
+
+    const r = old({ TAG: "v0.10.0", RELEASE_TRIGGER: "workflow_dispatch", VIEW: "0", CREATE: "1" });
+
     expect(r.exitCode).toBe(0);
-    expect(ghCalls()).toContain(`release create v0.10.0 --target ${oldSha} --latest=false `);
+    expect(r.stdout.toString()).toContain("already published");
+  });
+
+  test("自動の rc が main の先頭なら、そのまま公開して Latest にする", () => {
+    git("checkout", "-q", mainSha);
+
+    const r = old({ TAG: "v0.10.0-rc.2", RELEASE_TRIGGER: "workflow_run" });
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.toString()).not.toContain("::notice::");
+    expect(ghCalls()).toContain(`release create v0.10.0-rc.2 --target ${mainSha} --latest=true `);
+  });
+
+  test("比べる相手は公開済みの release だけ: release の無い高いタグが残っていても上限にしない", () => {
+    git("tag", "v1.0.0", oldSha);
+
+    const r = old({
+      TAG: "v0.11.0",
+      PUBLISHED_TAGS: "v0.1.0\nv0.2.0\nv0.9.0\nv0.10.0-rc.1",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("v0.10.0-rc.1");
+    expect(r.stderr.toString()).not.toContain("v1.0.0");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("release の一覧を読めなければ止めて理由を出す", () => {
+    const r = old({ TAG: "v0.9.5", LIST_ERROR: "HTTP 503: Service Unavailable" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("HTTP 503: Service Unavailable");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("拒否のメッセージは、正当なタグを後から dispatch で出す道も示す", () => {
+    const r = old({ TAG: "v0.10.0" });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("workflow_dispatch");
   });
 
   test("RELEASE_TRIGGER が無ければ release を作らずに止まる", () => {
