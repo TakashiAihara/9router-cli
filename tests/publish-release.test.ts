@@ -31,6 +31,18 @@ beforeEach(() => {
     gh,
     `#!/bin/sh
 echo "$*" >> "${calls}"
+if [ "$1" = api ]; then
+  case "$*" in
+    *"--method POST"*git/refs*)
+      if [ -n "\${REF_CREATE_ERROR:-}" ]; then echo "\${REF_CREATE_ERROR}" >&2; exit 1; fi
+      if [ -n "\${REF_EXISTING:-}" ]; then echo "gh: Reference already exists (HTTP 422)" >&2; exit 1; fi
+      exit 0 ;;
+    *git/ref/tags/*) echo "\${REF_TYPE:-commit} \${REF_EXISTING:-}" ;;
+    *git/tags/*) echo "\${TAG_TARGET:-}" ;;
+    *) exit 98 ;;
+  esac
+  exit 0
+fi
 case "$1 $2" in
   "release create") exit "\${CREATE:-0}" ;;
   "release view")
@@ -70,6 +82,7 @@ function publish(env: Record<string, string | undefined> = {}) {
       TAG,
       MAIN_SHA: head(),
       RELEASE_TRIGGER: "push",
+      GITHUB_REPOSITORY: "o/r",
       PUBLISHED_SUMS: published,
       PUBLISHED_BINARIES: "9router-cli-linux-x64",
       ...env,
@@ -436,5 +449,79 @@ describe("publish-release.sh: 版番号の並びと経路 (#15 の 2 周目)", (
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain("v0.10.0-rc.1");
     expect(r.stderr.toString()).not.toContain("v0.011.0");
+  });
+});
+
+describe("publish-release.sh: tag を先に作って競合を塞ぐ (#14)", () => {
+  const other = "0123456789abcdef0123456789abcdef01234567";
+
+  test("tag は API で build した commit に先に作り、release は既存の tag にだけ付ける", () => {
+    const r = publish({ VIEW: "1" });
+
+    expect(r.exitCode).toBe(0);
+    const calls = ghCalls();
+    expect(calls).toContain(
+      `api --method POST repos/o/r/git/refs -f ref=refs/tags/${TAG} -f sha=${head()}`,
+    );
+    expect(calls).toMatch(new RegExp(`release create ${TAG} .*--verify-tag`));
+    expect(calls.indexOf("git/refs")).toBeLessThan(calls.indexOf("release create"));
+  });
+
+  test("確認の後で同名の tag が別の commit に現れたら、release を作らずに止める", () => {
+    const r = publish({ VIEW: "1", REF_EXISTING: other });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain(other);
+    expect(r.stderr.toString()).toContain(head());
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("同じ commit を指す既存の tag (再実行) なら、そのまま release を付ける", () => {
+    const r = publish({ VIEW: "1", REF_EXISTING: head() });
+
+    expect(r.exitCode).toBe(0);
+    expect(ghCalls()).toMatch(new RegExp(`release create ${TAG} .*--verify-tag`));
+  });
+
+  test("注釈付き tag は指している commit で比べる", () => {
+    const tagObject = "fedcba9876543210fedcba9876543210fedcba98";
+
+    const same = publish({
+      VIEW: "1",
+      REF_EXISTING: tagObject,
+      REF_TYPE: "tag",
+      TAG_TARGET: head(),
+    });
+    expect(same.exitCode).toBe(0);
+    expect(ghCalls()).toContain(`git/tags/${tagObject}`);
+
+    const diff = publish({
+      VIEW: "1",
+      REF_EXISTING: tagObject,
+      REF_TYPE: "tag",
+      TAG_TARGET: other,
+    });
+    expect(diff.exitCode).toBe(1);
+    expect(diff.stderr.toString()).toContain(other);
+  });
+
+  test("tag を作れない理由が「既にある」以外なら、止めて理由を出す", () => {
+    const r = publish({
+      VIEW: "1",
+      REF_CREATE_ERROR: "HTTP 403: Resource not accessible by integration",
+    });
+
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("HTTP 403: Resource not accessible by integration");
+    expect(ghCalls()).not.toContain("release create");
+  });
+
+  test("GITHUB_REPOSITORY が無ければ何も作らずに止まる", () => {
+    const r = publish({ VIEW: "1", GITHUB_REPOSITORY: undefined });
+
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("GITHUB_REPOSITORY");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("git/refs");
+    expect(existsSync(calls) ? ghCalls() : "").not.toContain("release create");
   });
 });
