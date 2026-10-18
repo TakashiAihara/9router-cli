@@ -124,8 +124,12 @@ bun run check
 ### release
 
 - main に入って CI が通った commit は、すべて `vX.Y.Z-rc.N` として自動で release になる。tag が 1 つも無いときは `package.json` の version から `v<version>-rc.1` を始める
+- 「最新版」は GitHub が Latest にしている release の tag。`install.sh` の既定が引くのもそれで、main の先頭でない commit の release は Latest にしない
 - 確定版は `vX.Y.Z` の tag を手で push する。release の前に `bun run check` が回り、通らなければ release しない
-- Actions の `workflow_dispatch` は、既に push 済みの tag を release し直すためのもの。新しい tag は切れない
+- 古い commit (main の先頭でない commit) に tag を手で push するなら、公開済みの release の tag (`vX.Y.Z` / `vX.Y.Z-rc.N`、数を 0 始まりにせず 9 桁までにした形) のうち最も高いもの以下の版番号に限る。それより高い版番号は、main から出た次の release が出るまで「最も新しい版」として読まれるので公開しない。release の無い tag (拒否された tag や draft) はこの上限に含まれない
+- 拒否されたときの対処は 2 つ。tag を切った時に main の先頭で、その run の間に main が進んだなら、main が出す次の rc の release がその tag より上になったあとで `workflow_dispatch` する。それ以外は tag を消す (`git push origin :refs/tags/v0.2.0`)。消さないと次の run にも同じ tag が見える。とくに main の自動 rc の版番号は release の有無を問わず git の tag 全部から決まるので、残った tag は次の rc をその上まで押し上げ、その後は dispatch でこの上限を通ってしまう
+- main の自動 rc の run は、tag を決めた後で main が進んでいれば何も公開しない。緑のまま終わるので、理由が run summary に `::notice::` として出る
+- Actions の `workflow_dispatch` は、既に push 済みの tag を release し直すためのもの。新しい tag は切れない。上の版番号の制限も通り、その release が既にあれば再実行としてそのまま通る
 - 公開済みの release は上書きしない。同じ tag の再実行で `SHA256SUMS` が同じなら何もせず成功、違えば落ちる。draft のまま、または資産が欠けている release は成功と見なさない
 - 既に別の commit を指している tag には、その commit のバイナリを release しない (tag を消して送り直すか、次の tag を切る)
 - バイナリは 4 つとも形と埋め込んだ tag を検査してから、release する
