@@ -302,3 +302,90 @@ describe("release.yml: build の上げる artifact (#13)", () => {
     expect(step?.run).toContain('sh scripts/run-binary.sh "dist/9router-cli-$TARGET" "$TAG"');
   });
 });
+
+describe("release.yml: 検査した commit と成果物をそのまま公開する (#13 の 2 周目)", () => {
+  type Step = { name?: string; uses?: string; run?: string; with?: Record<string, unknown> };
+  type AnyJob = {
+    needs?: string | string[];
+    if?: string;
+    "timeout-minutes"?: number;
+    permissions?: unknown;
+    outputs?: Record<string, string>;
+    env?: Record<string, string>;
+    steps: Step[];
+  };
+  const jobs = () => (Bun.YAML.parse(read("release.yml")) as { jobs: Record<string, AnyJob> }).jobs;
+  const needs = (job: AnyJob) => ([] as string[]).concat(job.needs ?? []);
+  const runs = (job: AnyJob) => job.steps.map((s) => s.run ?? "").join("\n");
+  const stepsUsing = (job: AnyJob, action: string) =>
+    job.steps.filter((s) => s.uses?.startsWith(`${action}@`));
+
+  test("tag job が検査した commit の SHA を出し、build / verify / publish はその SHA を checkout する", () => {
+    const all = jobs();
+
+    expect(all.tag!.outputs?.sha).toBeTruthy();
+    for (const name of ["build", "verify", "publish"]) {
+      const job = all[name]!;
+      expect(needs(job)).toContain("tag");
+      const checkouts = stepsUsing(job, "actions/checkout");
+      expect(checkouts.length).toBe(1);
+      expect(checkouts[0]!.with?.ref).toBe("${{ needs.tag.outputs.sha }}");
+    }
+  });
+
+  test("verify には時間の上限があり、止まったバイナリが main の release を詰まらせない", () => {
+    const limit = jobs().verify!["timeout-minutes"];
+
+    expect(typeof limit).toBe("number");
+    expect(limit!).toBeGreaterThan(0);
+    expect(limit!).toBeLessThanOrEqual(30);
+  });
+
+  test("artifact は保持期間を明示し、build が上げた名前を verify と publish が落とす", () => {
+    const { build, verify, publish } = jobs();
+    const up = stepsUsing(build!, "actions/upload-artifact");
+
+    expect(up.length).toBe(1);
+    const retention = up[0]!.with?.["retention-days"];
+    expect(typeof retention).toBe("number");
+    expect(retention as number).toBeLessThanOrEqual(30);
+    const name = up[0]!.with?.name;
+    expect(typeof name).toBe("string");
+    for (const job of [verify!, publish!]) {
+      const down = stepsUsing(job, "actions/download-artifact");
+      expect(down.length).toBe(1);
+      expect(down[0]!.with?.name).toBe(name);
+    }
+  });
+
+  test("verify は SHA256SUMS を Linux でも macOS でも照合し、run-binary.sh の失敗を潰さない", () => {
+    const text = runs(jobs().verify!);
+
+    expect(text).toContain("sha256sum -c");
+    expect(text).toContain("shasum -a 256 -c");
+    expect(text).toMatch(/^\s*sh scripts\/run-binary\.sh [^\n]*$/m);
+    expect(text).not.toMatch(/run-binary\.sh[^\n]*(\|\||;)/);
+  });
+
+  test("publish は status 関数で verify の失敗を通さず、全ファイルを照合し、TAG を受け取る", () => {
+    const publish = jobs().publish!;
+
+    expect(publish.if ?? "").not.toMatch(/always\(\)|failure\(\)|cancelled\(\)/);
+    expect(runs(publish)).toMatch(/^\s*sha256sum -c SHA256SUMS\s*$/m);
+    expect(publish.env?.TAG).toBe("${{ needs.tag.outputs.tag }}");
+  });
+
+  test("権限は object で書き、署名の権限は publish だけが持つ", () => {
+    const { build, verify, publish } = jobs();
+
+    for (const job of [build!, verify!, publish!]) expect(typeof job.permissions).toBe("object");
+    for (const job of [build!, verify!]) {
+      const p = job.permissions as Record<string, string>;
+      expect(p["id-token"]).toBeUndefined();
+      expect(p.attestations).toBeUndefined();
+      expect(p.contents).toBe("read");
+    }
+    const p = publish!.permissions as Record<string, string>;
+    expect(p.attestations).toBe("write");
+  });
+});

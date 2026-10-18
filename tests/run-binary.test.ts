@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { makeSandbox, removeSandbox, type Sandbox } from "./helpers/cli.ts";
 
@@ -43,13 +43,14 @@ describe("scripts/run-binary.sh (#13)", () => {
   test("--help が落ちれば 1 で、--version は見ない", () => {
     const r = run(
       fakeBinary(
-        `case "$1" in --help) echo broken >&2; exit 3 ;; --version) echo 0.4.2-rc.7 ;; esac`,
+        `case "$1" in --help) echo broken >&2; exit 3 ;; --version) touch "${sb.dir}/version-was-run"; echo 0.4.2-rc.7 ;; esac`,
       ),
       "v0.4.2-rc.7",
     );
 
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain("--help");
+    expect(existsSync(join(sb.dir, "version-was-run"))).toBe(false);
   });
 
   test("--version が落ちれば 1", () => {
